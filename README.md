@@ -30,12 +30,12 @@
 ## セットアップ
 詳細は [`SETUP.md`](SETUP.md) を参照。要点のみ:
 
-1. Xcode で App プロジェクトを作成(Interface: SwiftUI)
-2. Firebase プロジェクトを作成し、**`GoogleService-Info.plist` をプロジェクト直下に配置**
+1. リポジトリを clone して `KaimonoList.xcodeproj` を開く
+   - Firebase SDK(`FirebaseAuth` / `FirebaseFirestore`)は Swift Package Manager で統合済み。初回オープン時に自動解決されます
+2. Firebase プロジェクトを作成し、**`GoogleService-Info.plist` を `KaimonoList/` フォルダに配置**
    - このファイルは `.gitignore` 済み。各自 Firebase コンソールからダウンロードしてください
-3. Swift Package Manager で `firebase-ios-sdk` を追加(`FirebaseAuth` / `FirebaseFirestore`)
-4. Firebase コンソールで **匿名認証**を有効化、**Firestore** を作成し `firestore.rules` を公開
-5. ビルド & 実行
+3. Firebase コンソールで **匿名認証**を有効化、**Firestore** を作成し `firestore.rules` を公開
+4. ビルド & 実行
 
 ## 動作環境
 - iOS 17.0 以上

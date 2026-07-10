@@ -6,25 +6,23 @@
 - この段階では Apple Developer Program($99/年)は不要。シミュレータと手元の実機で動きます。
   プッシュ通知・App Store 提出のフェーズで加入します。
 
-## 1. Xcode プロジェクト作成
-1. Xcode → Create New Project → **App**
-2. Product Name: `KaimonoList`(任意。変える場合はファイル内の struct 名も合わせて変更)
-3. Interface: **SwiftUI** / Language: **Swift**
-4. Bundle Identifier を控えておく(例: `com.yourname.kaimonolist`)→ Firebase 登録で使用
+## 1. プロジェクトを開く
+1. リポジトリを clone し、`KaimonoList.xcodeproj` を Xcode で開く
+2. Bundle Identifier は `com.kawasoe.KaimonoList`(Firebase 登録で使用。自分用に変える場合は
+   Signing & Capabilities で変更し、後述の Firebase 登録の Bundle ID も合わせる)
+3. Firebase SDK(`FirebaseAuth` / `FirebaseFirestore`)は Swift Package Manager で**統合済み**。
+   初回オープン時に自動でパッケージ解決が走ります(ネットワーク必要)
 
 ## 2. Firebase プロジェクト作成
 1. https://console.firebase.google.com → プロジェクトを追加(Analytics は任意、オフでOK)
 2. 「iOS アプリを追加」→ 手順1の Bundle ID を入力
-3. **GoogleService-Info.plist** をダウンロードし、Xcode のプロジェクト直下にドラッグ
-   (Copy items if needed にチェック、ターゲットに追加されていることを確認)
+3. **GoogleService-Info.plist** をダウンロードし、`KaimonoList/` フォルダに置く
+   (同期フォルダ構成なので、フォルダに入れれば自動でターゲットへ含まれる。`.gitignore` 済み)
 
-## 3. Firebase SDK を追加(Swift Package Manager)
-1. Xcode → File → Add Package Dependencies...
-2. URL: `https://github.com/firebase/firebase-ios-sdk`
-3. Dependency Rule: **Up to Next Major Version**(最新でOK)
-4. 追加するプロダクト(最小構成):
-   - `FirebaseAuth`
-   - `FirebaseFirestore`
+## 3. (SDK 追加は不要)
+Firebase SDK は上記のとおりプロジェクトに統合済みのため、手動追加は不要です。
+自分で追加し直す場合の設定: URL `https://github.com/firebase/firebase-ios-sdk` /
+Dependency Rule **Up to Next Major** / プロダクト `FirebaseAuth`・`FirebaseFirestore`。
 
 ## 4. Firebase コンソール側の設定
 ### Authentication
@@ -36,12 +34,12 @@
 - ロケーション: **asia-northeast1(東京)** 推奨
 - 「本番環境モード」で作成 → ルールタブに `firestore.rules` の内容を貼り付けて公開
 
-## 5. ソースファイルの配置
-プロジェクトに以下を追加(テンプレートの `ContentView.swift` は削除してOK):
+## 5. ソースファイルの構成
+ソースは `KaimonoList/` フォルダに配置済み(clone すればそのまま揃っています):
 
 ```
 KaimonoList/
-├── KaimonoListApp.swift      ← @main(テンプレートの App ファイルを置き換え)
+├── KaimonoListApp.swift      ← @main(FirebaseApp.configure() 後に SessionStore を生成)
 ├── Models.swift              ← データモデル・カテゴリ・カテゴリ推定・レシピ・献立
 ├── SessionStore.swift        ← 匿名サインイン + 世帯(household)の初期化
 ├── RootTabView.swift         ← ルート画面(リスト / 献立 のタブ切り替え)
