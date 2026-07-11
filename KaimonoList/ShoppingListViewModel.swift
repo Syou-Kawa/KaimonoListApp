@@ -106,6 +106,8 @@ final class ShoppingListViewModel {
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
                 if let error {
+                    // 退出・世帯切り替え時の権限エラーは自然に起きるので警告しない
+                    if error.isFirestorePermissionDenied { return }
                     self.errorMessage = error.localizedDescription
                     return
                 }
@@ -119,6 +121,8 @@ final class ShoppingListViewModel {
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
                 if let error {
+                    // 退出・世帯切り替え時の権限エラーは自然に起きるので警告しない
+                    if error.isFirestorePermissionDenied { return }
                     self.errorMessage = error.localizedDescription
                     return
                 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import AuthenticationServices
 
 /// 世帯の共有・メンバー管理画面。
 /// 招待コードの共有、メンバー一覧、招待コードでの参加、世帯からの退出を行う。
@@ -15,6 +16,7 @@ struct HouseholdView: View {
     @State private var isShowingNameSheet = false
     @State private var isConfirmingJoin = false
     @State private var isConfirmingLeave = false
+    @State private var isShowingDeleteSheet = false
     @State private var didCopyCode = false
 
     init(session: SessionStore) {
@@ -35,6 +37,7 @@ struct HouseholdView: View {
                 joinSection
                 leaveSection
                 signOutSection
+                deleteAccountSection
             }
             .navigationTitle("共有")
             .onAppear { viewModel.startListening() }
@@ -62,6 +65,9 @@ struct HouseholdView: View {
                     viewModel.updateMemberName(trimmed)
                 }
                 .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $isShowingDeleteSheet) {
+                DeleteAccountSheet(session: session)
             }
             .alert("エラー", isPresented: errorBinding) {
                 Button("OK") { viewModel.errorMessage = nil }
@@ -251,6 +257,22 @@ struct HouseholdView: View {
         }
     }
 
+    // MARK: - アカウント削除(退会)
+
+    private var deleteAccountSection: some View {
+        Section {
+            Button(role: .destructive) {
+                isShowingDeleteSheet = true
+            } label: {
+                Text("アカウントを削除")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(isProcessing)
+        } footer: {
+            Text("アカウントと Apple ID の連携を解除し、この端末の通知登録を削除します。この操作は取り消せません。")
+        }
+    }
+
     // MARK: - アクション
 
     private func join() {
@@ -324,5 +346,80 @@ private struct SingleFieldSheet: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - アカウント削除シート
+
+/// アカウント削除の確認と本人確認(Apple 再認証)を行うシート。
+/// 削除が成功すると SessionStore の状態が .signedOut に変わり、
+/// アプリ全体がサインイン画面へ切り替わるため、このシートは自動的に閉じる。
+private struct DeleteAccountSheet: View {
+    let session: SessionStore
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 24) {
+                Image(systemName: "person.crop.circle.badge.xmark")
+                    .font(.system(size: 56))
+                    .foregroundStyle(.red)
+
+                Text("アカウントを削除")
+                    .font(.title2.bold())
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("この操作は取り消せません。", systemImage: "exclamationmark.triangle.fill")
+                        .font(.callout.bold())
+                        .foregroundStyle(.red)
+                    Text("・お使いの Apple ID とこのアプリの連携を解除します。\n・現在の世帯からあなたを外します(共有データは他のメンバーが引き続き利用できます)。\n・この端末の通知登録を削除します。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Spacer()
+
+                if session.isDeletingAccount {
+                    ProgressView("削除しています…")
+                } else {
+                    SignInWithAppleButton(.continue) { request in
+                        session.prepareAppleRequest(request)
+                    } onCompletion: { result in
+                        Task { await session.deleteAccount(reauthResult: result) }
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 50)
+
+                    Text("本人確認のため、もう一度 Apple でサインインしてください。")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding()
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { dismiss() }
+                        .disabled(session.isDeletingAccount)
+                }
+            }
+            .interactiveDismissDisabled(session.isDeletingAccount)
+            .alert("削除に失敗しました", isPresented: deleteErrorBinding) {
+                Button("OK") { session.deletionErrorMessage = nil }
+            } message: {
+                Text(session.deletionErrorMessage ?? "")
+            }
+        }
+    }
+
+    private var deleteErrorBinding: Binding<Bool> {
+        Binding(
+            get: { session.deletionErrorMessage != nil },
+            set: { if !$0 { session.deletionErrorMessage = nil } }
+        )
     }
 }

@@ -25,6 +25,12 @@ final class SessionStore {
     /// サインイン画面に表示する認証エラー(ユーザーによるキャンセルは対象外)
     var authErrorMessage: String?
 
+    /// アカウント削除の進行中フラグ(削除シートのプログレス表示に使う)
+    var isDeletingAccount = false
+
+    /// アカウント削除時のエラー(ユーザーによるキャンセルは対象外)
+    var deletionErrorMessage: String?
+
     /// 現在サインイン中の UID(未確定なら nil)
     var currentUid: String? {
         if case let .ready(uid, _) = state { return uid }
@@ -164,6 +170,84 @@ final class SessionStore {
         }
     }
 
+    // MARK: - アカウント削除(退会)
+
+    /// アカウントを削除する(App Store ガイドライン 5.1.1(v) 対応)。
+    /// 破壊的操作のため、削除シートの SignInWithAppleButton で本人確認(再認証)を求め、
+    /// その結果を受け取ってから実行する。処理の流れ:
+    /// 1. 取得し直した Apple 資格情報で再認証(`user.delete()` の直近サインイン要件を満たす)
+    /// 2. 世帯からの離脱(デバイストークン削除 → memberIds/memberNames から自分を除去)
+    /// 3. Apple 側の連携トークンを失効(Sign in with Apple の要件)
+    /// 4. Firebase の認証アカウント本体を削除
+    /// - Parameter result: 削除シートの SignInWithAppleButton から渡される再認証結果
+    func deleteAccount(reauthResult result: Result<ASAuthorization, Error>) async {
+        defer { currentNonce = nil }
+
+        switch result {
+        case .failure(let error):
+            // ユーザーが自分でキャンセルした場合はエラー表示しない
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            deletionErrorMessage = error.localizedDescription
+
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let nonce = currentNonce,
+                  let tokenData = credential.identityToken,
+                  let idToken = String(data: tokenData, encoding: .utf8),
+                  let codeData = credential.authorizationCode,
+                  let authCode = String(data: codeData, encoding: .utf8),
+                  let user = Auth.auth().currentUser else {
+                deletionErrorMessage = "認証情報を取得できませんでした。もう一度お試しください。"
+                return
+            }
+
+            isDeletingAccount = true
+            defer { isDeletingAccount = false }
+            do {
+                // 1. 直近サインインとして本人確認をやり直す
+                let firebaseCredential = OAuthProvider.appleCredential(
+                    withIDToken: idToken,
+                    rawNonce: nonce,
+                    fullName: nil
+                )
+                try await user.reauthenticate(with: firebaseCredential)
+
+                // 2. 認証が有効なうちに世帯データから自分を外す(共有データ自体は残す)
+                await removeSelfFromHouseholdForDeletion(uid: user.uid)
+
+                // 3. Apple 側のトークンを失効(Sign in with Apple 利用アプリの要件)
+                try await Auth.auth().revokeToken(withAuthorizationCode: authCode)
+
+                // 4. 認証アカウント本体を削除
+                try await user.delete()
+
+                // 端末に残るキャッシュを片付けてサインイン画面へ戻す
+                UserDefaults.standard.removeObject(forKey: householdIdKey)
+                UserDefaults.standard.removeObject(forKey: displayNameKey)
+                state = .signedOut
+            } catch {
+                deletionErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// アカウント削除時に、現在の世帯から自分を取り除く(退出に相当。ただし
+    /// 新しい世帯は作らない)。共有データは他のメンバーが引き続き利用できる。
+    /// 認証アカウント削除を最優先とするため、世帯側の後片付けは失敗しても続行する。
+    private func removeSelfFromHouseholdForDeletion(uid: String) async {
+        // memberIds から外れると deviceTokens への書き込みがルールで拒否されるため、
+        // 先にこの端末のトークン登録を消しておく。
+        await PushManager.shared.clearRegistration()
+
+        guard let householdId = currentHouseholdId else { return }
+        try? await db.collection("households").document(householdId).updateData([
+            "memberIds": FieldValue.arrayRemove([uid]),
+            "memberNames.\(uid)": FieldValue.delete(),
+        ])
+    }
+
     private func storeDisplayNameIfNeeded(from fullName: PersonNameComponents?, fallback: String?) {
         // ユーザーがまだ表示名を保存していないときだけ Apple の氏名を採用する
         // (UserDefaults にキーが存在する = 既に設定済み)
@@ -190,8 +274,11 @@ final class SessionStore {
     /// 3. どこにも属していなければ新規作成する
     private func ensureHousehold(uid: String) async throws -> String {
         if let saved = UserDefaults.standard.string(forKey: householdIdKey), !saved.isEmpty {
-            let doc = try await db.collection("households").document(saved).getDocument()
-            if let memberIds = doc.data()?["memberIds"] as? [String], memberIds.contains(uid) {
+            // 保存済み世帯がまだ有効かを確認する。読めない場合(別端末での退出などで
+            // メンバーから外れ権限エラーになる、または世帯が消えている)は throw せず、
+            // try? で無視して所属世帯の再検索・新規作成へフォールバックする。
+            if let doc = try? await db.collection("households").document(saved).getDocument(),
+               let memberIds = doc.data()?["memberIds"] as? [String], memberIds.contains(uid) {
                 return saved
             }
         }
@@ -360,5 +447,19 @@ final class SessionStore {
     private static func sha256(_ input: String) -> String {
         let hashed = SHA256.hash(data: Data(input.utf8))
         return hashed.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Firestore エラー判定
+
+extension Error {
+    /// Firestore の「メンバーから外れて読めなくなった」権限エラーかどうか。
+    /// 世帯からの退出・切り替え時、まだ生きているリスナーが一斉に発火して自然に起きる。
+    /// (同じ Apple ID の別端末では uid を共有するため、片方が退出すると両方で発生する)
+    /// ユーザー向けの警告として扱うべきではないので、この判定で握りつぶす。
+    var isFirestorePermissionDenied: Bool {
+        let nsError = self as NSError
+        return nsError.domain == FirestoreErrorDomain
+            && nsError.code == FirestoreErrorCode.permissionDenied.rawValue
     }
 }
