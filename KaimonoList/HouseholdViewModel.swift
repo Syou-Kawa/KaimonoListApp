@@ -84,8 +84,26 @@ final class HouseholdViewModel {
     func renameHousehold(_ name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        householdRef.updateData(["name": trimmed]) { [weak self] error in
-            if let error { self?.errorMessage = error.localizedDescription }
+        Task {
+            do {
+                try await householdRef.updateData(["name": trimmed])
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// 自分の表示名を世帯のメンバー一覧に反映する。
+    /// 他のメンバーの画面にもリアルタイムで新しい名前が表示される。
+    func updateMemberName(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            do {
+                try await householdRef.updateData(["memberNames.\(currentUid)": trimmed])
+            } catch {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

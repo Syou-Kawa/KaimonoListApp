@@ -21,6 +21,13 @@ final class ShoppingListViewModel {
     }
 
     var uncheckedGroups: [CategoryGroup] {
+        Self.uncheckedGroups(items: items, categories: categories)
+    }
+
+    /// 未購入アイテムをカテゴリ(売り場)順にグループ化する純粋関数。
+    /// Firestore に依存しないので、ユニットテストから直接呼べる。
+    static func uncheckedGroups(items: [ShoppingItem],
+                               categories: [ItemCategory]) -> [CategoryGroup] {
         let unchecked = items.filter { !$0.isChecked }
         guard !unchecked.isEmpty else { return [] }
 

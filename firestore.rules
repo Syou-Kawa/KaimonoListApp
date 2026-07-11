@@ -30,7 +30,11 @@ service cloud.firestore {
     // list(列挙)は許可しない = 総当たりでの世帯探索を防ぐ。
     match /inviteCodes/{code} {
       allow get:    if isSignedIn();
-      allow create: if isSignedIn();
+      // 作成: その世帯のメンバーだけが自分の世帯の招待コードを登録できる
+      // (他人の世帯IDを指すコードの乱立を防ぐ。bootstrap 時は世帯作成直後で
+      //  自分がメンバーに含まれているため通る)
+      allow create: if isSignedIn()
+        && isMember(request.resource.data.householdId);
       allow update, delete: if false;
     }
 

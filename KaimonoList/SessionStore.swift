@@ -1,23 +1,29 @@
 import Foundation
 import Observation
+import CryptoKit
+import AuthenticationServices
 import FirebaseAuth
 import FirebaseFirestore
 
 /// 認証と世帯(household)の初期化を担当。
-/// 現状は開発用の匿名認証。リリース前に Sign in with Apple へ置き換える
-/// (匿名アカウントは Auth.auth().currentUser.link(with:) で本アカウントに昇格でき、
-///  UID が変わらないので Firestore のデータはそのまま引き継げる)。
+/// 認証は Sign in with Apple のみ。サインインしないとアプリを利用できない
+/// (サインインゲート方式)。アカウントに UID が紐づくので、
+/// 端末変更・再インストール後も同じ世帯データに復帰できる。
 @MainActor
 @Observable
 final class SessionStore {
 
     enum State {
         case loading
+        case signedOut
         case ready(uid: String, householdId: String)
         case failed(String)
     }
 
     private(set) var state: State = .loading
+
+    /// サインイン画面に表示する認証エラー(ユーザーによるキャンセルは対象外)
+    var authErrorMessage: String?
 
     /// 現在サインイン中の UID(未確定なら nil)
     var currentUid: String? {
@@ -31,45 +37,163 @@ final class SessionStore {
         return nil
     }
 
-    /// 一覧の「誰が追加したか」表示に使う名前。
-    /// 設定画面を作るまでの暫定として UserDefaults を参照
+    /// 一覧の「誰が追加したか」表示に使う名前。設定画面から変更でき、
+    /// 初回サインイン時には Apple から取得した氏名を既定値として採用する。
+    /// 変更は UserDefaults に永続化する(@Observable で画面にも反映される)。
     var displayName: String {
-        UserDefaults.standard.string(forKey: "displayName") ?? "わたし"
+        didSet { UserDefaults.standard.set(displayName, forKey: displayNameKey) }
     }
 
-    private let db = Firestore.firestore()
+    // Firestore への参照は初回アクセス時に生成する。SessionStore の生成自体では
+    // Firebase に触れないため、Firebase 未構成のユニットテスト環境でも安全に初期化できる。
+    @ObservationIgnored private lazy var db = Firestore.firestore()
     private let householdIdKey = "householdId"
+    private let displayNameKey = "displayName"
 
+    init() {
+        displayName = UserDefaults.standard.string(forKey: displayNameKey) ?? "わたし"
+    }
+
+    /// Sign in with Apple のリプレイ攻撃対策 nonce。リクエスト時に生成し、
+    /// 完了時に Firebase へ rawNonce として渡す
+    private var currentNonce: String?
+
+    // MARK: - 起動時の状態判定
+
+    /// 既存の Apple サインインセッションがあればそのまま復帰、なければサインイン画面へ。
     func bootstrap() async {
         state = .loading
-        do {
-            // 1. サインイン(既存セッションがあれば再利用)
-            let uid: String
-            if let user = Auth.auth().currentUser {
-                uid = user.uid
-            } else {
-                let result = try await Auth.auth().signInAnonymously()
-                uid = result.user.uid
+        if let user = Auth.auth().currentUser, !user.isAnonymous {
+            do {
+                try await completeSetup(uid: user.uid)
+            } catch {
+                state = .failed(error.localizedDescription)
             }
-
-            // 2. 世帯の用意(保存済みIDがあればそれを、なければ新規作成)
-            let householdId = try await ensureHousehold(uid: uid)
-
-            // 3. 初期カテゴリのシード(空の場合のみ。既存世帯のアップグレードも兼ねる)
-            try await seedDefaultCategoriesIfNeeded(householdId: householdId)
-
-            // 4. 招待コード → 世帯ID の対応表を用意(既存世帯のアップグレードも兼ねる)
-            try await ensureInviteCodeMapping(householdId: householdId)
-
-            state = .ready(uid: uid, householdId: householdId)
-        } catch {
-            state = .failed(error.localizedDescription)
+        } else {
+            // 旧ビルドの匿名アカウントが残っていたらサインアウトしておく
+            if Auth.auth().currentUser != nil {
+                try? Auth.auth().signOut()
+            }
+            state = .signedOut
         }
     }
 
+    /// サインイン成立後に共通で行う世帯まわりの初期化。
+    private func completeSetup(uid: String) async throws {
+        let householdId = try await ensureHousehold(uid: uid)
+        try await seedDefaultCategoriesIfNeeded(householdId: householdId)
+        try await ensureInviteCodeMapping(householdId: householdId)
+        state = .ready(uid: uid, householdId: householdId)
+    }
+
+    // MARK: - Sign in with Apple
+
+    /// SignInWithAppleButton の onRequest で呼ぶ。要求スコープと nonce を設定する。
+    func prepareAppleRequest(_ request: ASAuthorizationAppleIDRequest) {
+        let nonce = Self.randomNonceString()
+        currentNonce = nonce
+        request.requestedScopes = [.fullName]
+        request.nonce = Self.sha256(nonce)
+    }
+
+    /// SignInWithAppleButton の onCompletion で呼ぶ。
+    /// Apple の資格情報を Firebase の認証情報に変換してサインインする。
+    func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) async {
+        defer { currentNonce = nil }
+
+        switch result {
+        case .failure(let error):
+            // ユーザーが自分でキャンセルした場合はエラー表示しない
+            if let authError = error as? ASAuthorizationError, authError.code == .canceled {
+                return
+            }
+            authErrorMessage = error.localizedDescription
+
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+                authErrorMessage = "Apple の認証情報を取得できませんでした。"
+                return
+            }
+            guard let nonce = currentNonce else {
+                authErrorMessage = "認証リクエストが正しく初期化されていません。もう一度お試しください。"
+                return
+            }
+            guard let tokenData = credential.identityToken,
+                  let idToken = String(data: tokenData, encoding: .utf8) else {
+                authErrorMessage = "ID トークンを取得できませんでした。"
+                return
+            }
+
+            state = .loading
+            do {
+                let firebaseCredential = OAuthProvider.appleCredential(
+                    withIDToken: idToken,
+                    rawNonce: nonce,
+                    fullName: credential.fullName
+                )
+                let authResult = try await Auth.auth().signIn(with: firebaseCredential)
+                // 氏名は初回サインイン時のみ Apple から渡される。未設定なら表示名として保存
+                storeDisplayNameIfNeeded(from: credential.fullName,
+                                         fallback: authResult.user.displayName)
+                try await completeSetup(uid: authResult.user.uid)
+            } catch {
+                authErrorMessage = error.localizedDescription
+                state = .signedOut
+            }
+        }
+    }
+
+    /// サインアウトしてサインイン画面へ戻す。
+    /// 端末に保存したアクティブ世帯IDは残す(同じアカウントなら次回そのまま復帰でき、
+    /// 別アカウントがサインインした場合は ensureHousehold 側でメンバー判定して弾く)。
+    func signOut() {
+        do {
+            try Auth.auth().signOut()
+            state = .signedOut
+        } catch {
+            authErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func storeDisplayNameIfNeeded(from fullName: PersonNameComponents?, fallback: String?) {
+        // ユーザーがまだ表示名を保存していないときだけ Apple の氏名を採用する
+        // (UserDefaults にキーが存在する = 既に設定済み)
+        guard UserDefaults.standard.string(forKey: displayNameKey) == nil else { return }
+
+        let formatter = PersonNameComponentsFormatter()
+        if let fullName {
+            let formatted = formatter.string(from: fullName)
+            if !formatted.isEmpty {
+                displayName = formatted
+                return
+            }
+        }
+        if let fallback, !fallback.isEmpty {
+            displayName = fallback
+        }
+    }
+
+    // MARK: - 世帯の用意
+
+    /// サインインしたアカウントが利用する世帯IDを返す。
+    /// 1. 端末に保存されたアクティブ世帯が、まだ自分がメンバーならそれを使う
+    /// 2. 別端末・再インストール時は所属世帯を検索して復帰する
+    /// 3. どこにも属していなければ新規作成する
     private func ensureHousehold(uid: String) async throws -> String {
         if let saved = UserDefaults.standard.string(forKey: householdIdKey), !saved.isEmpty {
-            return saved
+            let doc = try await db.collection("households").document(saved).getDocument()
+            if let memberIds = doc.data()?["memberIds"] as? [String], memberIds.contains(uid) {
+                return saved
+            }
+        }
+
+        let query = try await db.collection("households")
+            .whereField("memberIds", arrayContains: uid)
+            .limit(to: 1)
+            .getDocuments()
+        if let doc = query.documents.first {
+            UserDefaults.standard.set(doc.documentID, forKey: householdIdKey)
+            return doc.documentID
         }
 
         let inviteCode = Self.makeInviteCode()
@@ -81,7 +205,7 @@ final class SessionStore {
             inviteCode: inviteCode,
             createdAt: nil  // @ServerTimestamp: nil のままだとサーバー時刻が入る
         )
-        let ref = try await db.collection("households").addDocument(from: household)
+        let ref = try db.collection("households").addDocument(from: household)
         UserDefaults.standard.set(ref.documentID, forKey: householdIdKey)
 
         // 招待コード → 世帯ID の対応表も同時に作る(参加時の逆引き用)
@@ -186,9 +310,41 @@ final class SessionStore {
         try await batch.commit()
     }
 
+    // MARK: - nonce ユーティリティ(Sign in with Apple)
+
     /// 紛らわしい文字(0/O、1/I/L)を除いた6桁の招待コード
     private static func makeInviteCode() -> String {
         let chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
         return String((0..<6).compactMap { _ in chars.randomElement() })
+    }
+
+    /// リプレイ攻撃対策のランダム nonce を生成する
+    private static func randomNonceString(length: Int = 32) -> String {
+        precondition(length > 0)
+        let charset: [Character] =
+            Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remaining = length
+
+        while remaining > 0 {
+            var randoms = [UInt8](repeating: 0, count: 16)
+            let status = SecRandomCopyBytes(kSecRandomDefault, randoms.count, &randoms)
+            guard status == errSecSuccess else {
+                fatalError("Unable to generate nonce. SecRandomCopyBytes failed with \(status)")
+            }
+            for random in randoms where remaining > 0 {
+                if random < charset.count {
+                    result.append(charset[Int(random)])
+                    remaining -= 1
+                }
+            }
+        }
+        return result
+    }
+
+    /// nonce を SHA256 でハッシュ化(Apple へはハッシュを渡し、Firebase へは生値を渡す)
+    private static func sha256(_ input: String) -> String {
+        let hashed = SHA256.hash(data: Data(input.utf8))
+        return hashed.map { String(format: "%02x", $0) }.joined()
     }
 }

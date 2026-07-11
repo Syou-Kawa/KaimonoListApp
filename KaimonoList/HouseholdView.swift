@@ -12,6 +12,7 @@ struct HouseholdView: View {
     @State private var joinCode = ""
     @State private var isProcessing = false
     @State private var isShowingRenameSheet = false
+    @State private var isShowingNameSheet = false
     @State private var isConfirmingJoin = false
     @State private var isConfirmingLeave = false
     @State private var didCopyCode = false
@@ -27,17 +28,38 @@ struct HouseholdView: View {
     var body: some View {
         NavigationStack {
             List {
+                accountSection
                 householdSection
                 inviteCodeSection
                 membersSection
                 joinSection
                 leaveSection
+                signOutSection
             }
             .navigationTitle("共有")
             .onAppear { viewModel.startListening() }
             .sheet(isPresented: $isShowingRenameSheet) {
-                RenameHouseholdSheet(name: viewModel.householdName) { newName in
+                SingleFieldSheet(
+                    navigationTitle: "世帯名を変更",
+                    sectionTitle: "世帯の名前",
+                    placeholder: "例:わが家",
+                    initialValue: viewModel.householdName
+                ) { newName in
                     viewModel.renameHousehold(newName)
+                }
+                .presentationDetents([.medium])
+            }
+            .sheet(isPresented: $isShowingNameSheet) {
+                SingleFieldSheet(
+                    navigationTitle: "表示名を変更",
+                    sectionTitle: "あなたの表示名",
+                    placeholder: "例:たろう",
+                    initialValue: session.displayName
+                ) { newName in
+                    let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    session.displayName = trimmed
+                    viewModel.updateMemberName(trimmed)
                 }
                 .presentationDetents([.medium])
             }
@@ -54,6 +76,31 @@ struct HouseholdView: View {
             get: { viewModel.errorMessage != nil },
             set: { if !$0 { viewModel.errorMessage = nil } }
         )
+    }
+
+    // MARK: - アカウント(表示名)
+
+    private var accountSection: some View {
+        Section {
+            Button {
+                isShowingNameSheet = true
+            } label: {
+                HStack {
+                    Text("表示名")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(session.displayName)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "pencil")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        } header: {
+            Text("アカウント")
+        } footer: {
+            Text("買い物リストや献立に「追加した人」として表示される名前です。")
+        }
     }
 
     // MARK: - 世帯名
@@ -191,6 +238,19 @@ struct HouseholdView: View {
         }
     }
 
+    // MARK: - サインアウト
+
+    private var signOutSection: some View {
+        Section {
+            Button("サインアウト") {
+                session.signOut()
+            }
+            .disabled(isProcessing)
+        } footer: {
+            Text("同じ Apple ID で再度サインインすれば、同じリストに戻れます。")
+        }
+    }
+
     // MARK: - アクション
 
     private func join() {
@@ -222,27 +282,34 @@ struct HouseholdView: View {
     }
 }
 
-// MARK: - 世帯名の編集シート
+// MARK: - 単一テキスト入力の編集シート(世帯名・表示名で共用)
 
-private struct RenameHouseholdSheet: View {
+private struct SingleFieldSheet: View {
+    let navigationTitle: String
+    let sectionTitle: String
+    let placeholder: String
     let onSave: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
-    @State private var name: String
+    @State private var text: String
 
-    init(name: String, onSave: @escaping (String) -> Void) {
+    init(navigationTitle: String, sectionTitle: String, placeholder: String,
+         initialValue: String, onSave: @escaping (String) -> Void) {
+        self.navigationTitle = navigationTitle
+        self.sectionTitle = sectionTitle
+        self.placeholder = placeholder
         self.onSave = onSave
-        _name = State(initialValue: name)
+        _text = State(initialValue: initialValue)
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("世帯の名前") {
-                    TextField("例:わが家", text: $name)
+                Section(sectionTitle) {
+                    TextField(placeholder, text: $text)
                 }
             }
-            .navigationTitle("世帯名を変更")
+            .navigationTitle(navigationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -250,10 +317,10 @@ private struct RenameHouseholdSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        onSave(name)
+                        onSave(text)
                         dismiss()
                     }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }

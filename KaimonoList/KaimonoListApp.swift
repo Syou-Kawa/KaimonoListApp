@@ -8,22 +8,36 @@ struct KaimonoListApp: App {
     @State private var session: SessionStore
 
     init() {
-        // SessionStore は生成時に Firestore へ触れるので、
-        // 必ず FirebaseApp.configure() を先に済ませてから生成する。
-        FirebaseApp.configure()
+        // ユニットテストはホストアプリ上で実行されるためこの init が走る。
+        // テスト時は GoogleService-Info.plist を前提とする Firebase を構成せず、
+        // Firestore にも触れない(ロジックのテストに Firebase は不要)。
+        if !Self.isRunningUnitTests {
+            FirebaseApp.configure()
+        }
         _session = State(initialValue: SessionStore())
     }
 
     var body: some Scene {
         WindowGroup {
-            RootView(session: session)
-                .task {
-                    // 未サインインのときだけ初期化を走らせる(再描画での重複実行を防ぐ)
-                    if case .loading = session.state {
-                        await session.bootstrap()
+            if Self.isRunningUnitTests {
+                // Firebase 未構成のため、テスト時は bootstrap を呼ばず空表示にする
+                Color.clear
+            } else {
+                RootView(session: session)
+                    .task {
+                        // 未サインインのときだけ初期化を走らせる(再描画での重複実行を防ぐ)
+                        if case .loading = session.state {
+                            await session.bootstrap()
+                        }
                     }
-                }
+            }
         }
+    }
+
+    /// XCTest / Swift Testing のホスト実行中かどうか。テスト時は
+    /// 環境変数 XCTestConfigurationFilePath がテストランナーによって設定される。
+    private static var isRunningUnitTests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 }
 
@@ -35,6 +49,8 @@ private struct RootView: View {
         switch session.state {
         case .loading:
             ProgressView("準備中…")
+        case .signedOut:
+            SignInView(session: session)
         case .ready:
             RootTabView(session: session)
         case .failed(let message):

@@ -11,14 +11,30 @@
 		742A697630019D29004A94F8 /* FirebaseFirestore in Frameworks */ = {isa = PBXBuildFile; productRef = 742A697530019D29004A94F8 /* FirebaseFirestore */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		742A69983001B2A1004A94F8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 742A695C30019BD5004A94F8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 742A696330019BD5004A94F8;
+			remoteInfo = KaimonoList;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		742A696430019BD5004A94F8 /* KaimonoList.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KaimonoList.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		742A69943001B2A1004A94F8 /* KaimonoListTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KaimonoListTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		742A696630019BD5004A94F8 /* KaimonoList */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = KaimonoList;
+			sourceTree = "<group>";
+		};
+		742A69953001B2A1004A94F8 /* KaimonoListTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = KaimonoListTests;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -33,6 +49,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		742A69913001B2A1004A94F8 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -40,6 +63,7 @@
 			isa = PBXGroup;
 			children = (
 				742A696630019BD5004A94F8 /* KaimonoList */,
+				742A69953001B2A1004A94F8 /* KaimonoListTests */,
 				742A696530019BD5004A94F8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -48,6 +72,7 @@
 			isa = PBXGroup;
 			children = (
 				742A696430019BD5004A94F8 /* KaimonoList.app */,
+				742A69943001B2A1004A94F8 /* KaimonoListTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -79,6 +104,29 @@
 			productReference = 742A696430019BD5004A94F8 /* KaimonoList.app */;
 			productType = "com.apple.product-type.application";
 		};
+		742A69933001B2A1004A94F8 /* KaimonoListTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 742A699A3001B2A1004A94F8 /* Build configuration list for PBXNativeTarget "KaimonoListTests" */;
+			buildPhases = (
+				742A69903001B2A1004A94F8 /* Sources */,
+				742A69913001B2A1004A94F8 /* Frameworks */,
+				742A69923001B2A1004A94F8 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				742A69993001B2A1004A94F8 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				742A69953001B2A1004A94F8 /* KaimonoListTests */,
+			);
+			name = KaimonoListTests;
+			packageProductDependencies = (
+			);
+			productName = KaimonoListTests;
+			productReference = 742A69943001B2A1004A94F8 /* KaimonoListTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -91,6 +139,10 @@
 				TargetAttributes = {
 					742A696330019BD5004A94F8 = {
 						CreatedOnToolsVersion = 26.6;
+					};
+					742A69933001B2A1004A94F8 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = 742A696330019BD5004A94F8;
 					};
 				};
 			};
@@ -112,12 +164,20 @@
 			projectRoot = "";
 			targets = (
 				742A696330019BD5004A94F8 /* KaimonoList */,
+				742A69933001B2A1004A94F8 /* KaimonoListTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		742A696230019BD5004A94F8 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		742A69923001B2A1004A94F8 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -134,7 +194,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		742A69903001B2A1004A94F8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		742A69993001B2A1004A94F8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 742A696330019BD5004A94F8 /* KaimonoList */;
+			targetProxy = 742A69983001B2A1004A94F8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		742A696D30019BD6004A94F8 /* Debug */ = {
@@ -326,6 +401,46 @@
 			};
 			name = Release;
 		};
+		742A699B3001B2A1004A94F8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kawasoe.KaimonoListTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KaimonoList.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/KaimonoList";
+			};
+			name = Debug;
+		};
+		742A699C3001B2A1004A94F8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.kawasoe.KaimonoListTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/KaimonoList.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/KaimonoList";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -343,6 +458,15 @@
 			buildConfigurations = (
 				742A697030019BD6004A94F8 /* Debug */,
 				742A697130019BD6004A94F8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		742A699A3001B2A1004A94F8 /* Build configuration list for PBXNativeTarget "KaimonoListTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				742A699B3001B2A1004A94F8 /* Debug */,
+				742A699C3001B2A1004A94F8 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
