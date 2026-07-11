@@ -73,6 +73,11 @@ service cloud.firestore {
       match /mealPlans/{entryId} {
         allow read, write: if isMember(householdId);
       }
+
+      // 購入履歴(好みの学習データ。献立提案のスコアリングに使用)
+      match /purchaseHistory/{recordId} {
+        allow read, write: if isMember(householdId);
+      }
     }
   }
 }

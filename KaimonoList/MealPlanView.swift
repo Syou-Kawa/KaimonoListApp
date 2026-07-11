@@ -165,6 +165,40 @@ private struct PlanRow: View {
     }
 }
 
+// MARK: - おすすめの行
+
+/// 提案レシピ1件。よく買う食材を理由として添える
+private struct SuggestionRow: View {
+    let suggestion: MealSuggester.Suggestion
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(suggestion.recipe.emoji)
+                .font(.title3)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(suggestion.recipe.name)
+                    .foregroundStyle(.primary)
+                if !suggestion.matchedIngredients.isEmpty {
+                    Text("よく買う \(reasonText) を使う")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Spacer()
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(.yellow)
+        }
+    }
+
+    /// 理由に載せる食材名(最大3件、以降は「ほか」)
+    private var reasonText: String {
+        let names = suggestion.matchedIngredients
+        let shown = names.prefix(3).joined(separator: "・")
+        return names.count > 3 ? "\(shown) ほか" : shown
+    }
+}
+
 // MARK: - レシピ選択シート
 
 private struct RecipePickerSheet: View {
@@ -187,24 +221,43 @@ private struct RecipePickerSheet: View {
                             .buttonStyle(.borderedProminent)
                     }
                 } else {
-                    List(viewModel.recipes) { recipe in
-                        Button {
-                            viewModel.addPlan(recipe: recipe, on: date)
-                            dismiss()
-                        } label: {
-                            HStack(spacing: 12) {
-                                Text(recipe.emoji)
-                                    .font(.title3)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(recipe.name)
-                                        .foregroundStyle(.primary)
-                                    Text("材料 \(recipe.ingredients.count)品")
-                                        .font(.caption2)
-                                        .foregroundStyle(.tertiary)
+                    List {
+                        if !viewModel.suggestions.isEmpty {
+                            Section("おすすめ") {
+                                ForEach(viewModel.suggestions) { suggestion in
+                                    Button {
+                                        viewModel.addPlan(recipe: suggestion.recipe, on: date)
+                                        dismiss()
+                                    } label: {
+                                        SuggestionRow(suggestion: suggestion)
+                                    }
+                                }
+                            }
+                        }
+
+                        Section {
+                            ForEach(viewModel.recipes) { recipe in
+                                Button {
+                                    viewModel.addPlan(recipe: recipe, on: date)
+                                    dismiss()
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        Text(recipe.emoji)
+                                            .font(.title3)
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(recipe.name)
+                                                .foregroundStyle(.primary)
+                                            Text("材料 \(recipe.ingredients.count)品")
+                                                .font(.caption2)
+                                                .foregroundStyle(.tertiary)
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    // シートを開くたびに直近の購入履歴から提案を再生成する
+                    .task { await viewModel.generateSuggestions() }
                 }
             }
             .navigationTitle("レシピを選ぶ")

@@ -85,6 +85,7 @@ final class ShoppingListViewModel {
     }
     private var itemsRef: CollectionReference { householdRef.collection("items") }
     private var categoriesRef: CollectionReference { householdRef.collection("categories") }
+    private var purchaseHistoryRef: CollectionReference { householdRef.collection("purchaseHistory") }
 
     init(householdId: String, currentUid: String, currentUserName: String) {
         self.householdId = householdId
@@ -173,11 +174,21 @@ final class ShoppingListViewModel {
     }
 
     /// 購入済みをまとめて削除(レジ後のリセット用)。
-    /// フェーズ3で「削除前に purchase_history へ記録 → 献立提案の学習データにする」予定
+    /// 削除の前に purchaseHistory へ記録し、献立提案(MealSuggester)の学習データにする。
     func clearChecked() {
         let batch = db.batch()
         for item in checkedItems {
             guard let id = item.id else { continue }
+            // 購入履歴に記録(好みの学習データ)。categoryId は存在するときのみ持たせる
+            var record: [String: Any] = [
+                "name": item.name,
+                "purchasedByUid": currentUid,
+                "purchasedAt": FieldValue.serverTimestamp(),
+            ]
+            if let categoryId = item.categoryId {
+                record["categoryId"] = categoryId
+            }
+            batch.setData(record, forDocument: purchaseHistoryRef.document())
             batch.deleteDocument(itemsRef.document(id))
         }
         batch.commit()

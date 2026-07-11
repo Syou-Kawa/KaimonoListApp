@@ -109,6 +109,19 @@ struct MealPlanEntry: Identifiable, Codable, Equatable {
     var ingredientsAddedAt: Date?
 }
 
+// MARK: - 購入履歴(好みの学習データ)
+
+/// households/{id}/purchaseHistory/{id} に保存。
+/// 買い物リストで「購入済み」を削除する際に記録し、世帯の好み(よく買う食材)を蓄積する。
+/// 献立提案(MealSuggester)のスコアリング入力になる。
+struct PurchaseRecord: Identifiable, Codable {
+    @DocumentID var id: String?
+    var name: String
+    var categoryId: String?
+    var purchasedByUid: String
+    @ServerTimestamp var purchasedAt: Date?
+}
+
 // MARK: - 品名からカテゴリを推定(簡易キーワードマッチ)
 
 /// matcherKey を返し、UI 側で「その key を持つカテゴリ」を探して適用する。
@@ -147,5 +160,74 @@ enum CategoryGuesser {
             return rule.key
         }
         return nil
+    }
+}
+
+// MARK: - 献立提案(購入履歴からの好みスコアリング)
+
+/// レシピ帳の中から、世帯の好み(=よく買う食材)に合うレシピを提案する純粋関数。
+/// Firestore に依存しないのでユニットテストから直接呼べる(CategoryGuesser と同じ方針)。
+/// スコア = レシピの各材料の購入回数の合計。多く買う食材を使うレシピほど上位になる。
+/// フェーズ3で購入頻度・季節性などの重み付けに発展させられる。
+enum MealSuggester {
+    struct Suggestion: Identifiable {
+        var id: String                     // recipe.id
+        var recipe: Recipe
+        var score: Int
+        var matchedIngredients: [String]   // 好みに一致した材料名(提案理由の表示用)
+    }
+
+    /// 品名の表記ゆれを吸収するための正規化(前後空白除去 + 小文字化)。
+    static func normalize(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// - Parameters:
+    ///   - recipes: レシピ帳
+    ///   - preferenceCounts: 正規化した品名 → 購入回数
+    ///   - excludedRecipeIds: すでに献立に入っているなど、提案対象から除外するレシピID
+    ///   - limit: 返す最大件数
+    /// - Returns: スコア降順(同点はレシピ名昇順)の提案。スコア0のレシピは含めない。
+    static func suggest(recipes: [Recipe],
+                        preferenceCounts: [String: Int],
+                        excludedRecipeIds: Set<String>,
+                        limit: Int) -> [Suggestion] {
+        guard limit > 0, !preferenceCounts.isEmpty else { return [] }
+
+        var suggestions: [Suggestion] = []
+        for recipe in recipes {
+            guard let id = recipe.id, !excludedRecipeIds.contains(id) else { continue }
+
+            var score = 0
+            var matched: [String] = []
+            for ingredient in recipe.ingredients {
+                let key = normalize(ingredient.name)
+                guard !key.isEmpty else { continue }
+                // 完全一致 or 双方向の包含(「牛乳」⊂「低脂肪牛乳」等)でマッチ判定
+                if let count = matchedCount(for: key, in: preferenceCounts) {
+                    score += count
+                    matched.append(ingredient.name)
+                }
+            }
+            guard score > 0 else { continue }
+            suggestions.append(Suggestion(id: id, recipe: recipe, score: score,
+                                          matchedIngredients: matched))
+        }
+
+        suggestions.sort {
+            $0.score != $1.score ? $0.score > $1.score : $0.recipe.name < $1.recipe.name
+        }
+        return Array(suggestions.prefix(limit))
+    }
+
+    /// 材料名(正規化済み)に対応する購入回数を返す。完全一致を優先し、
+    /// 無ければ双方向の部分一致でマッチした回数を合算する。マッチ無しは nil。
+    private static func matchedCount(for key: String, in counts: [String: Int]) -> Int? {
+        if let exact = counts[key] { return exact }
+        var total = 0
+        for (name, count) in counts where name.contains(key) || key.contains(name) {
+            total += count
+        }
+        return total > 0 ? total : nil
     }
 }

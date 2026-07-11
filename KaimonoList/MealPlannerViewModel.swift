@@ -18,6 +18,10 @@ final class MealPlannerViewModel {
     /// 「◯件をリストに追加しました」などの操作フィードバック
     var infoMessage: String?
 
+    /// 購入履歴(好み)から算出した献立の提案。レシピ選択シートを開くたびに再生成する
+    private(set) var suggestions: [MealSuggester.Suggestion] = []
+    private(set) var isGeneratingSuggestions = false
+
     /// 献立表の表示範囲(今日から7日分)
     var weekDates: [Date] {
         let today = Calendar.current.startOfDay(for: Date())
@@ -52,6 +56,7 @@ final class MealPlannerViewModel {
     private var plansRef: CollectionReference { householdRef.collection("mealPlans") }
     private var categoriesRef: CollectionReference { householdRef.collection("categories") }
     private var itemsRef: CollectionReference { householdRef.collection("items") }
+    private var purchaseHistoryRef: CollectionReference { householdRef.collection("purchaseHistory") }
 
     init(householdId: String, currentUid: String, currentUserName: String) {
         self.householdId = householdId
@@ -222,6 +227,41 @@ final class MealPlannerViewModel {
     func removePlan(_ entry: MealPlanEntry) {
         guard let id = entry.id else { return }
         plansRef.document(id).delete()
+    }
+
+    // MARK: - 献立提案(購入履歴からの好みスコアリング)
+
+    /// 直近の購入履歴を集計し、好みに合うレシピを `suggestions` に反映する。
+    /// レシピ選択シートを開いたときに呼ぶ。今週すでに予定に入っているレシピは除外する。
+    func generateSuggestions() async {
+        isGeneratingSuggestions = true
+        defer { isGeneratingSuggestions = false }
+        do {
+            // 直近500件のみ集計(複合インデックス不要な単一フィールド order)
+            let snapshot = try await purchaseHistoryRef
+                .order(by: "purchasedAt", descending: true)
+                .limit(to: 500)
+                .getDocuments()
+
+            var preferenceCounts: [String: Int] = [:]
+            for document in snapshot.documents {
+                guard let name = document.data()["name"] as? String else { continue }
+                let key = MealSuggester.normalize(name)
+                guard !key.isEmpty else { continue }
+                preferenceCounts[key, default: 0] += 1
+            }
+
+            let excluded = Set(planEntries.map(\.recipeId))
+            suggestions = MealSuggester.suggest(
+                recipes: recipes,
+                preferenceCounts: preferenceCounts,
+                excludedRecipeIds: excluded,
+                limit: 5
+            )
+        } catch {
+            // 提案はあくまで補助機能なので、失敗時はエラー表示せず提案を空にするだけ
+            suggestions = []
+        }
     }
 
     // MARK: - 食材展開(レシピ → 買い物リスト)
