@@ -25,10 +25,17 @@ exports.notifyItemAdded = onDocumentCreated(
       if (!snapshot) return;
 
       const item = snapshot.data();
+
+      // まとめ買い(バッチ追加)の抑制対象は通知しない。
+      // クライアントは一括追加時、先頭の1件だけに batchSize を持たせ、
+      // 残りには suppressNotification を付けて重複通知を防ぐ。
+      if (item.suppressNotification) return;
+
       const {householdId} = event.params;
       const adderUid = item.addedByUid || "";
       const adderName = item.addedByName || "メンバー";
       const itemName = item.name || "アイテム";
+      const batchSize = item.batchSize;
 
       const db = getFirestore();
 
@@ -49,7 +56,9 @@ exports.notifyItemAdded = onDocumentCreated(
         tokens,
         notification: {
           title: "🛒 買い物リストが更新されました",
-          body: `${adderName}さんが「${itemName}」を追加しました`,
+          body: (typeof batchSize === "number" && batchSize > 1) ?
+            `${adderName}さんが${batchSize}件追加しました` :
+            `${adderName}さんが「${itemName}」を追加しました`,
         },
         apns: {
           payload: {

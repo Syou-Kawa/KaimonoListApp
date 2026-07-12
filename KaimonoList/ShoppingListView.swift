@@ -179,6 +179,8 @@ struct ShoppingListView: View {
                         ForEach(group.items) { item in
                             ItemRow(item: item) {
                                 toggle(item)
+                            } onEdit: {
+                                editingItem = item
                             }
                             .swipeActions {
                                 Button(role: .destructive) {
@@ -205,6 +207,8 @@ struct ShoppingListView: View {
                         ForEach(filteredCheckedItems) { item in
                             ItemRow(item: item) {
                                 toggle(item)
+                            } onEdit: {
+                                editingItem = item
                             }
                         }
                         // 検索中は表示中のものだけが対象と誤解されないよう、全件削除ボタンは隠す
@@ -226,42 +230,52 @@ struct ShoppingListView: View {
 private struct ItemRow: View {
     let item: ShoppingItem
     let onToggle: () -> Void
+    let onEdit: () -> Void
 
     var body: some View {
-        Button(action: onToggle) {
-            HStack(spacing: 12) {
+        HStack(spacing: 12) {
+            // チェックの位置を押したときだけ購入済み/未購入を切り替える
+            Button(action: onToggle) {
                 Image(systemName: item.isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.title3)
                     .foregroundStyle(item.isChecked ? Color.green : Color.secondary)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.name)
-                        .strikethrough(item.isChecked)
-                        .foregroundStyle(item.isChecked ? .secondary : .primary)
-                    if let recipeName = item.sourceRecipeName {
-                        Label {
-                            Text(recipeName)
-                        } icon: {
-                            Text(item.sourceRecipeEmoji ?? "🍽️")
-                        }
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    }
-                    Text(item.addedByName)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                Spacer()
-
-                if let quantity = item.quantity {
-                    Text(quantity)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel(item.isChecked ? "未購入に戻す" : "購入済みにする")
+
+            // 項目部分を押したときは編集シートを開く
+            Button(action: onEdit) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.name)
+                            .strikethrough(item.isChecked)
+                            .foregroundStyle(item.isChecked ? .secondary : .primary)
+                        if let recipeName = item.sourceRecipeName {
+                            Label {
+                                Text(recipeName)
+                            } icon: {
+                                Text(item.sourceRecipeEmoji ?? "🍽️")
+                            }
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        }
+                        Text(item.addedByName)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer()
+
+                    if let quantity = item.quantity {
+                        Text(quantity)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
     }
 }
 

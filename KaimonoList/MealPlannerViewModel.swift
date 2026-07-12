@@ -570,6 +570,41 @@ final class MealPlannerViewModel {
         }
     }
 
+    /// 週間まとめ買いの確認画面で選択・編集した材料1件。
+    /// 集約結果をユーザーが確認画面で編集(数量の書き換え・不要な材料の除外)した後の値を表す。
+    struct EditedIngredient {
+        var name: String
+        var quantity: String?
+        var recipeName: String
+        var recipeEmoji: String
+    }
+
+    /// 確認画面で選んだ材料だけを買い物リストへ追加し、未展開の献立を「追加済み」にする。
+    /// 数量はユーザーが編集した値をそのまま使う(集約時のスケール済みの値を書き換え可能)。
+    func addSelectedWeeklyIngredients(_ items: [EditedIngredient]) async {
+        guard !items.isEmpty else { return }
+        // レシピが解決できる未展開の献立を「追加済み」にする(まとめて追加と同じ扱い)
+        let resolvedEntries = planEntries.filter { entry in
+            entry.ingredientsAddedAt == nil && recipes.contains { $0.id == entry.recipeId }
+        }
+        let additions = items.map { item in
+            IngredientToAdd(
+                ingredient: RecipeIngredient(name: item.name, quantity: item.quantity),
+                recipeName: item.recipeName,
+                recipeEmoji: item.recipeEmoji
+            )
+        }
+        do {
+            let addedCount = try await addToShoppingList(additions)
+            markIngredientsAdded(resolvedEntries)
+            infoMessage = addedCount == 0
+                ? "材料はすべてリストにあります"
+                : "\(addedCount)件を買い物リストに追加しました"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     /// 未展開の献立すべての材料をまとめて買い物リストへ追加する
     func addAllPendingIngredients() async {
         let pending = planEntries.filter { $0.ingredientsAddedAt == nil }
@@ -621,8 +656,7 @@ final class MealPlannerViewModel {
             .getDocuments()
         var existingNames = Set(snapshot.documents.compactMap { $0.data()["name"] as? String })
 
-        let batch = db.batch()
-        var addedCount = 0
+        var pendingItems: [[String: Any]] = []
         for addition in additions {
             let ingredient = addition.ingredient
             guard !existingNames.contains(ingredient.name) else { continue }
@@ -643,13 +677,28 @@ final class MealPlannerViewModel {
             if let quantity = ingredient.quantity {
                 data["quantity"] = quantity
             }
-            batch.setData(data, forDocument: itemsRef.document())
-            addedCount += 1
+            pendingItems.append(data)
         }
-        if addedCount > 0 {
+
+        // まとめ買い(2件以上の一括追加)は通知を1回にまとめる。
+        // 通知は items の作成を監視する Cloud Function が送るため、
+        // 先頭の1件だけに件数(batchSize)を持たせて「〇件追加」と通知させ、
+        // 残りは suppressNotification で個別通知を抑制する。
+        if pendingItems.count >= 2 {
+            pendingItems[0]["batchSize"] = pendingItems.count
+            for index in 1..<pendingItems.count {
+                pendingItems[index]["suppressNotification"] = true
+            }
+        }
+
+        let batch = db.batch()
+        for data in pendingItems {
+            batch.setData(data, forDocument: itemsRef.document())
+        }
+        if !pendingItems.isEmpty {
             try await batch.commit()
         }
-        return addedCount
+        return pendingItems.count
     }
 
     private func markIngredientsAdded(_ entries: [MealPlanEntry]) {

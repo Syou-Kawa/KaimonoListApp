@@ -40,10 +40,10 @@ struct MealPlanView: View {
                         Button {
                             isShowingWeeklyShopping = true
                         } label: {
-                            Label("週間まとめ買い", systemImage: "cart.badge.plus")
+                            Label("まとめてリストに追加", systemImage: "cart.badge.plus")
                         }
                     } footer: {
-                        Text("1週間分の献立の材料をまとめて見て、一括で買い物リストへ追加できます。")
+                        Text("1週間分の献立の材料をまとめて見て、選んで買い物リストへ追加できます。")
                     }
                 }
 
