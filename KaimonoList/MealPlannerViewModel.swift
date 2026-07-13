@@ -113,6 +113,11 @@ final class MealPlannerViewModel {
     private var recipesListener: ListenerRegistration?
     private var plansListener: ListenerRegistration?
     private var categoriesListener: ListenerRegistration?
+    private var itemsListener: ListenerRegistration?
+
+    /// 買い物リストにある未購入・購入済みを問わないアイテムの品名。
+    /// 追加済み献立の「材料がまだリストにあるか」を判定するために保持する。
+    private var shoppingItemNames: Set<String> = []
 
     private var householdRef: DocumentReference {
         db.collection("households").document(householdId)
@@ -198,15 +203,34 @@ final class MealPlannerViewModel {
                     try? $0.data(as: ItemCategory.self)
                 } ?? []
             }
+
+        // 買い物リストの変化を監視し、追加済み献立の材料が削除されたら追加済みを解除する。
+        // 追加直後は材料が存在するので解除されず、材料が全て消えたときだけ再追加できる状態へ戻す。
+        itemsListener = itemsRef
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self else { return }
+                if let error {
+                    // 退出・世帯切り替え時の権限エラーは自然に起きるので警告しない
+                    if error.isFirestorePermissionDenied { return }
+                    self.errorMessage = error.localizedDescription
+                    return
+                }
+                self.shoppingItemNames = Set(
+                    snapshot?.documents.compactMap { $0.data()["name"] as? String } ?? []
+                )
+                self.resetAddedStatusForRemovedIngredients()
+            }
     }
 
     func stopListening() {
         recipesListener?.remove()
         plansListener?.remove()
         categoriesListener?.remove()
+        itemsListener?.remove()
         recipesListener = nil
         plansListener = nil
         categoriesListener = nil
+        itemsListener = nil
     }
 
     // MARK: - レシピ操作
@@ -757,6 +781,27 @@ final class MealPlannerViewModel {
             try await batch.commit()
         }
         return pendingItems.count
+    }
+
+    /// 追加済み(材料展開済み)の献立のうち、レシピの材料が買い物リストから
+    /// すべて無くなったものは「追加済み」を解除し、再び追加できる状態へ戻す。
+    /// 材料が1つでもリストに残っていれば追加済みのままにする。
+    /// (レシピが削除済み・材料が空の献立は判定できないので対象外)
+    private func resetAddedStatusForRemovedIngredients() {
+        let batch = db.batch()
+        var writes = 0
+        for entry in planEntries where entry.ingredientsAddedAt != nil {
+            guard let id = entry.id,
+                  let recipe = recipes.first(where: { $0.id == entry.recipeId }) else { continue }
+            let names = recipe.ingredients.map(\.name).filter { !$0.isEmpty }
+            guard !names.isEmpty else { continue }
+            // 材料が1つも買い物リストに残っていなければ追加済みを解除する
+            guard !names.contains(where: { shoppingItemNames.contains($0) }) else { continue }
+            batch.updateData(["ingredientsAddedAt": FieldValue.delete()],
+                             forDocument: plansRef.document(id))
+            writes += 1
+        }
+        if writes > 0 { batch.commit() }
     }
 
     private func markIngredientsAdded(_ entries: [MealPlanEntry]) {
