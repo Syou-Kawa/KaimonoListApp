@@ -148,6 +148,75 @@ struct PurchaseRecord: Identifiable, Codable {
     @ServerTimestamp var purchasedAt: Date?
 }
 
+// MARK: - よく買うもの(購入履歴の頻度ランキング)
+
+/// 購入履歴から「よく買う品」を頻度順に集計する純粋関数。
+/// Firestore に依存しないのでユニットテストから直接呼べる(CategoryGuesser と同じ方針)。
+/// 買い物リストの追加シートで、ワンタップ追加の候補チップに使う。
+enum FrequentItems {
+
+    /// ランキング1件。ワンタップ追加に必要な品名とカテゴリを持つ。
+    struct Item: Identifiable, Equatable {
+        var name: String        // 代表表記(最も最近購入したときの品名)
+        var categoryId: String? // 最も最近購入したときのカテゴリ(削除済みなら追加側で推定し直す)
+        var count: Int          // 購入回数(表記ゆれをまとめた合計)
+        var id: String { name }
+    }
+
+    /// 品名の表記ゆれを吸収する正規化(前後空白除去 + 小文字化)。純粋関数。
+    private static func normalize(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// - Parameters:
+    ///   - history: 購入履歴(順序は問わない)
+    ///   - excludingNames: すでにリストにある等、候補から外す品名(正規化して比較)
+    ///   - limit: 返す最大件数
+    /// - Returns: 購入回数の多い順(同数は最近購入した順、さらに品名昇順)の候補。
+    ///   品名が空の履歴、および除外対象の品名は含めない。
+    static func topItems(from history: [PurchaseRecord],
+                         excludingNames: Set<String> = [],
+                         limit: Int) -> [Item] {
+        guard limit > 0 else { return [] }
+        let excluded = Set(excludingNames.map(normalize))
+
+        // 正規化キーごとに、回数・最新の購入時刻・その時点の表記/カテゴリを集める
+        struct Bucket {
+            var count = 0
+            var latestDate = Date.distantPast
+            var latestName = ""
+            var latestCategoryId: String?
+        }
+        var buckets: [String: Bucket] = [:]
+
+        for record in history {
+            let displayName = record.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = normalize(displayName)
+            guard !key.isEmpty, !excluded.contains(key) else { continue }
+
+            var bucket = buckets[key] ?? Bucket()
+            bucket.count += 1
+            // 最新の購入を代表の表記・カテゴリにする(未設定 or より新しい記録で更新)
+            let date = record.purchasedAt ?? .distantPast
+            if bucket.latestName.isEmpty || date >= bucket.latestDate {
+                bucket.latestDate = date
+                bucket.latestName = displayName
+                bucket.latestCategoryId = record.categoryId
+            }
+            buckets[key] = bucket
+        }
+
+        let sorted = buckets.values.sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count > rhs.count }
+            if lhs.latestDate != rhs.latestDate { return lhs.latestDate > rhs.latestDate }
+            return lhs.latestName < rhs.latestName
+        }
+        return sorted.prefix(limit).map {
+            Item(name: $0.latestName, categoryId: $0.latestCategoryId, count: $0.count)
+        }
+    }
+}
+
 // MARK: - 品名からカテゴリを推定(簡易キーワードマッチ)
 
 /// matcherKey を返し、UI 側で「その key を持つカテゴリ」を探して適用する。

@@ -12,6 +12,7 @@ final class ShoppingListViewModel {
     private(set) var items: [ShoppingItem] = []
     private(set) var categories: [ItemCategory] = []   // sortOrder 順で保持
     private(set) var recipes: [Recipe] = []            // 編集シートでアイテムに紐づける料理の選択肢
+    private(set) var purchaseHistory: [PurchaseRecord] = []   // 「よく買うもの」候補の集計元
     var errorMessage: String?
 
     /// 一括削除の直後に表示する「元に戻す」トースト。nil = 非表示。
@@ -89,6 +90,13 @@ final class ShoppingListViewModel {
         }
     }
 
+    /// 追加シートのワンタップ候補。購入回数が多い順に並ぶ。
+    /// すでに未購入リストにある品は重複防止のため除外する(追加すると自然に候補から消える)。
+    var frequentItems: [FrequentItems.Item] {
+        let excluded = Set(items.filter { !$0.isChecked }.map(\.name))
+        return FrequentItems.topItems(from: purchaseHistory, excludingNames: excluded, limit: 12)
+    }
+
     /// 追加シートの初期選択に使うカテゴリ(「その他」→ なければ末尾)
     var defaultCategoryId: String? {
         categories.first(where: { $0.matcherKey == "other" })?.id ?? categories.last?.id
@@ -110,6 +118,7 @@ final class ShoppingListViewModel {
     private var itemsListener: ListenerRegistration?
     private var categoriesListener: ListenerRegistration?
     private var recipesListener: ListenerRegistration?
+    private var purchaseHistoryListener: ListenerRegistration?
 
     private var householdRef: DocumentReference {
         db.collection("households").document(householdId)
@@ -177,15 +186,35 @@ final class ShoppingListViewModel {
                     try? $0.data(as: Recipe.self)
                 } ?? []
             }
+
+        // 「よく買うもの」候補のために、最近の購入履歴を新しい順で購読する。
+        // 全件は不要なので上限を設けて読み取りコストを抑える。
+        purchaseHistoryListener = purchaseHistoryRef
+            .order(by: "purchasedAt", descending: true)
+            .limit(to: 300)
+            .addSnapshotListener { [weak self] snapshot, error in
+                guard let self else { return }
+                if let error {
+                    // 退出・世帯切り替え時の権限エラーは自然に起きるので警告しない
+                    if error.isFirestorePermissionDenied { return }
+                    self.errorMessage = error.localizedDescription
+                    return
+                }
+                self.purchaseHistory = snapshot?.documents.compactMap {
+                    try? $0.data(as: PurchaseRecord.self)
+                } ?? []
+            }
     }
 
     func stopListening() {
         itemsListener?.remove()
         categoriesListener?.remove()
         recipesListener?.remove()
+        purchaseHistoryListener?.remove()
         itemsListener = nil
         categoriesListener = nil
         recipesListener = nil
+        purchaseHistoryListener = nil
     }
 
     // MARK: - アイテム操作
@@ -211,6 +240,19 @@ final class ShoppingListViewModel {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// 「よく買うもの」チップからワンタップで追加する。
+    /// 履歴のカテゴリが削除済みなら、品名からカテゴリを推定し直す。
+    func addFromFrequent(_ item: FrequentItems.Item) {
+        let resolvedCategoryId: String?
+        if let id = item.categoryId, categories.contains(where: { $0.id == id }) {
+            resolvedCategoryId = id
+        } else {
+            resolvedCategoryId = categoryId(forMatcherKey: CategoryGuesser.guessKey(from: item.name))
+                ?? defaultCategoryId
+        }
+        addItem(name: item.name, categoryId: resolvedCategoryId, quantity: "")
     }
 
     func toggleChecked(_ item: ShoppingItem) {

@@ -292,6 +292,8 @@ private struct AddItemSheet: View {
     @State private var lastAutoCategoryId: String?
     /// 同名の未購入アイテムが既にある場合に確認ダイアログへ渡す品名。nil = 非表示
     @State private var duplicateWarningName: String?
+    /// 「よく買うもの」チップでの追加時に触覚を鳴らすためのトリガ。値が変わると再生される
+    @State private var quickAddFeedbackTrigger = 0
     @FocusState private var isNameFocused: Bool
 
     var body: some View {
@@ -313,9 +315,29 @@ private struct AddItemSheet: View {
                             .tag(category.id)
                     }
                 }
+
+                // よく買うもの: 購入履歴からのワンタップ追加候補。
+                // チップを左から詰めて折り返し、全候補を見渡せるようにする
+                if !viewModel.frequentItems.isEmpty {
+                    Section("よく買うもの") {
+                        WrappingChips(items: viewModel.frequentItems, spacing: 8) { item in
+                            Button {
+                                viewModel.addFromFrequent(item)
+                                quickAddFeedbackTrigger += 1
+                            } label: {
+                                Label(item.name, systemImage: "plus")
+                                    .font(.subheadline)
+                            }
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                        }
+                    }
+                }
             }
             .navigationTitle("アイテムを追加")
             .navigationBarTitleDisplayMode(.inline)
+            // よく買うものからのワンタップ追加時に成功の触覚を鳴らす
+            .sensoryFeedback(.success, trigger: quickAddFeedbackTrigger)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("閉じる") { dismiss() }
@@ -473,5 +495,70 @@ private struct EditItemSheet: View {
                              categoryId: selectedCategoryId,
                              recipe: recipe)
         dismiss()
+    }
+}
+
+// MARK: - チップの折り返し表示
+
+/// 子要素を左から詰めて並べ、行の幅が足りなくなったら次の行へ折り返す表示。
+/// Form / List の行内でも崩れないよう、実際の利用可能幅(GeometryReader)を読み、
+/// 各要素の位置を alignmentGuide で計算する方式にしている。
+/// 「よく買うもの」チップを画面幅に合わせて詰めて表示するために使う。
+private struct WrappingChips<Item: Identifiable, Content: View>: View {
+    let items: [Item]
+    var spacing: CGFloat = 8
+    @ViewBuilder let content: (Item) -> Content
+
+    /// 折り返した結果の総高さ。測定して行の高さを確定させる(初期0 → 測定後に反映)。
+    @State private var totalHeight: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            generate(in: geo)
+        }
+        .frame(height: totalHeight)
+    }
+
+    private func generate(in geo: GeometryProxy) -> some View {
+        var x: CGFloat = 0   // 現在行の使用済み幅(負値で累積)
+        var y: CGFloat = 0   // 現在行の縦位置(負値で累積)
+        return ZStack(alignment: .topLeading) {
+            ForEach(items) { item in
+                content(item)
+                    .padding(.trailing, spacing)
+                    .padding(.bottom, spacing)
+                    .alignmentGuide(.leading) { dimension in
+                        // 残り幅に収まらなければ次の行へ折り返す
+                        if abs(x - dimension.width) > geo.size.width {
+                            x = 0
+                            y -= dimension.height
+                        }
+                        let result = x
+                        if item.id == items.last?.id {
+                            x = 0   // 最後の要素の後は次回の描画に備えてリセット
+                        } else {
+                            x -= dimension.width
+                        }
+                        return result
+                    }
+                    .alignmentGuide(.top) { _ in
+                        let result = y
+                        if item.id == items.last?.id {
+                            y = 0
+                        }
+                        return result
+                    }
+            }
+        }
+        .background(heightReader)
+    }
+
+    /// ZStack の実高さを測って totalHeight に書き戻す(レイアウト後に反映)。
+    private var heightReader: some View {
+        GeometryReader { geo -> Color in
+            let height = geo.size.height
+            DispatchQueue.main.async { totalHeight = height }
+            return Color.clear
+        }
     }
 }
