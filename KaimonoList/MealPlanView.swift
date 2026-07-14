@@ -18,10 +18,12 @@ struct MealPlanView: View {
     /// 週間まとめ買いシートの表示状態
     @State private var isShowingWeeklyShopping = false
 
-    /// sheet(item:) に渡すためのラッパー(Date は Identifiable ではないので)
+    /// sheet(item:) に渡すためのラッパー(Date は Identifiable ではないので)。
+    /// `allowsDateSelection` が true のときはシート内で日付を選び直せる(「日付を選んで追加」用)。
     private struct PickTarget: Identifiable {
         let date: Date
-        var id: String { MealPlannerViewModel.dateKey(date) }
+        var allowsDateSelection: Bool = false
+        var id: String { "\(MealPlannerViewModel.dateKey(date))-\(allowsDateSelection)" }
     }
 
     init(householdId: String, currentUid: String, currentUserName: String) {
@@ -43,11 +45,15 @@ struct MealPlanView: View {
                             Label("まとめてリストに追加", systemImage: "cart.badge.plus")
                         }
                     } footer: {
-                        Text("1週間分の献立の材料をまとめて見て、選んで買い物リストへ追加できます。")
+                        Text("献立の材料をまとめて見て、選んで買い物リストへ追加できます。")
                     }
                 }
 
-                ForEach(viewModel.weekDates, id: \.self) { date in
+                if !viewModel.pastPendingEntries.isEmpty {
+                    pastPendingSection
+                }
+
+                ForEach(viewModel.planDates, id: \.self) { date in
                     daySection(for: date)
                 }
             }
@@ -63,6 +69,11 @@ struct MealPlanView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        Button("日付を選んで献立を追加", systemImage: "calendar.badge.plus") {
+                            pickTarget = PickTarget(date: Calendar.current.startOfDay(for: Date()),
+                                                    allowsDateSelection: true)
+                        }
+                        Divider()
                         Button("献立をすべて削除", systemImage: "trash", role: .destructive) {
                             isConfirmingClearAll = true
                         }
@@ -77,7 +88,8 @@ struct MealPlanView: View {
                 WeeklyShoppingView(viewModel: viewModel)
             }
             .sheet(item: $pickTarget) { target in
-                RecipePickerSheet(viewModel: viewModel, date: target.date)
+                RecipePickerSheet(viewModel: viewModel, date: target.date,
+                                  allowsDateSelection: target.allowsDateSelection)
                     .presentationDetents([.medium, .large])
             }
             .sheet(item: $editServingsTarget) { entry in
@@ -201,30 +213,7 @@ struct MealPlanView: View {
                     .foregroundStyle(.tertiary)
             }
             ForEach(dayEntries) { entry in
-                PlanRow(entry: entry) {
-                    Task { await viewModel.addIngredients(for: entry) }
-                } onEditServings: {
-                    editServingsTarget = entry
-                } onShowDetail: {
-                    detailTarget = entry
-                }
-                .swipeActions {
-                    Button(role: .destructive) {
-                        deleteTarget = entry
-                    } label: {
-                        Label("削除", systemImage: "trash")
-                    }
-                    // 材料を買い物リストへ追加済みの献立は、編集してもリストへ反映されないため
-                    // 混乱を避けて編集を出さない(材料の確認はタップで引き続き可能)
-                    if entry.ingredientsAddedAt == nil {
-                        Button {
-                            editRecipeTarget = entry
-                        } label: {
-                            Label("編集", systemImage: "square.and.pencil")
-                        }
-                        .tint(.blue)
-                    }
-                }
+                planRow(for: entry)
             }
         } header: {
             HStack {
@@ -236,6 +225,51 @@ struct MealPlanView: View {
                     Image(systemName: "plus.circle")
                 }
                 .accessibilityLabel("\(Self.dayTitle(for: date))に献立を追加")
+            }
+        }
+    }
+
+    /// 日付が過ぎたのに材料を追加していない献立をまとめて表示するセクション。
+    /// 各行には過ぎた日付を添えて、いつの予定だったか分かるようにする。
+    @ViewBuilder
+    private var pastPendingSection: some View {
+        Section {
+            ForEach(viewModel.pastPendingEntries) { entry in
+                planRow(for: entry, dateLabel: Self.pastDayLabel(for: entry.date))
+            }
+        } header: {
+            Text("未処理")
+        } footer: {
+            Text("日付が過ぎたのに材料を買い物リストへ追加していない献立です。追加するか削除してください。")
+        }
+    }
+
+    /// 献立1件の行(日ごとのセクション・未処理セクション共用)。
+    /// `dateLabel` を渡すと過ぎた日付を行に表示する。
+    @ViewBuilder
+    private func planRow(for entry: MealPlanEntry, dateLabel: String? = nil) -> some View {
+        PlanRow(entry: entry, dateLabel: dateLabel) {
+            Task { await viewModel.addIngredients(for: entry) }
+        } onEditServings: {
+            editServingsTarget = entry
+        } onShowDetail: {
+            detailTarget = entry
+        }
+        .swipeActions {
+            Button(role: .destructive) {
+                deleteTarget = entry
+            } label: {
+                Label("削除", systemImage: "trash")
+            }
+            // 材料を買い物リストへ追加済みの献立は、編集してもリストへ反映されないため
+            // 混乱を避けて編集を出さない(材料の確認はタップで引き続き可能)
+            if entry.ingredientsAddedAt == nil {
+                Button {
+                    editRecipeTarget = entry
+                } label: {
+                    Label("編集", systemImage: "square.and.pencil")
+                }
+                .tint(.blue)
             }
         }
     }
@@ -253,12 +287,20 @@ struct MealPlanView: View {
         if Calendar.current.isDateInTomorrow(date) { return "明日 \(label)" }
         return label
     }
+
+    /// 未処理セクションの行に添える、過ぎた日付のラベル("yyyy-MM-dd" キー → "M/d(E)")
+    private static func pastDayLabel(for dateKey: String) -> String? {
+        guard let date = MealPlannerViewModel.date(fromKey: dateKey) else { return nil }
+        return dayFormatter.string(from: date)
+    }
 }
 
 // MARK: - 献立の行
 
 private struct PlanRow: View {
     let entry: MealPlanEntry
+    /// 過ぎた日付のラベル(未処理セクションで表示)。nil のときは表示しない
+    var dateLabel: String? = nil
     let onAddIngredients: () -> Void
     let onEditServings: () -> Void
     let onShowDetail: () -> Void
@@ -275,6 +317,11 @@ private struct PlanRow: View {
             Text(entry.recipeEmoji)
                 .font(.title3)
             VStack(alignment: .leading, spacing: 2) {
+                if let dateLabel {
+                    Text(dateLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
                 Text(entry.recipeName)
                 // 追加済み(材料展開済み)の献立は人数も編集不可にして静的表示にする。
                 // 未追加のときだけタップで人数編集シートを開く
@@ -541,13 +588,22 @@ private struct RecipeUnavailableSheet: View {
 
 private struct RecipePickerSheet: View {
     let viewModel: MealPlannerViewModel
-    let date: Date
+    /// 日付を選び直せるか(「日付を選んで追加」から開いたとき true)
+    let allowsDateSelection: Bool
 
     @Environment(\.dismiss) private var dismiss
     @State private var isShowingNewRecipe = false
     @State private var searchText = ""
     /// 追加する献立の人数(選んだレシピすべてに適用する)
     @State private var servings = MealPlanEntry.defaultServings
+    /// 追加先の日付。allowsDateSelection のときはシート内の DatePicker で変更できる
+    @State private var selectedDate: Date
+
+    init(viewModel: MealPlannerViewModel, date: Date, allowsDateSelection: Bool = false) {
+        self.viewModel = viewModel
+        self.allowsDateSelection = allowsDateSelection
+        _selectedDate = State(initialValue: date)
+    }
 
     /// レシピ帳のレシピ(検索で絞り込み)
     private var myRecipes: [Recipe] { filtered(viewModel.recipes) }
@@ -561,6 +617,17 @@ private struct RecipePickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
+                if allowsDateSelection {
+                    Section {
+                        DatePicker("日付", selection: $selectedDate,
+                                   in: Calendar.current.startOfDay(for: Date())...,
+                                   displayedComponents: .date)
+                            .environment(\.locale, Locale(identifier: "ja_JP"))
+                    } footer: {
+                        Text("選んだレシピをこの日付で献立に追加します。")
+                    }
+                }
+
                 Section {
                     Stepper(value: $servings, in: MealPlannerViewModel.servingsRange) {
                         HStack {
@@ -579,7 +646,7 @@ private struct RecipePickerSheet: View {
                     Section("おすすめ") {
                         ForEach(viewModel.suggestions) { suggestion in
                             Button {
-                                viewModel.selectRecipe(suggestion.recipe, on: date, servings: servings)
+                                viewModel.selectRecipe(suggestion.recipe, on: selectedDate, servings: servings)
                                 dismiss()
                             } label: {
                                 SuggestionRow(suggestion: suggestion)
@@ -643,7 +710,7 @@ private struct RecipePickerSheet: View {
     @ViewBuilder
     private func recipeButton(_ recipe: Recipe, subtitle: String) -> some View {
         Button {
-            viewModel.selectRecipe(recipe, on: date, servings: servings)
+            viewModel.selectRecipe(recipe, on: selectedDate, servings: servings)
             dismiss()
         } label: {
             HStack(spacing: 12) {

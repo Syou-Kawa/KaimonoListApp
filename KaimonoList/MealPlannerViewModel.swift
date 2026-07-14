@@ -22,15 +22,45 @@ final class MealPlannerViewModel {
     private(set) var suggestions: [MealSuggester.Suggestion] = []
     private(set) var isGeneratingSuggestions = false
 
-    /// 献立表の表示範囲(今日から7日分)
-    var weekDates: [Date] {
-        let today = Calendar.current.startOfDay(for: Date())
-        return (0..<7).compactMap { Calendar.current.date(byAdding: .day, value: $0, to: today) }
+    /// 献立表の既定の表示日数(今日を含む)。これより先の日付でも、予定があればその日は表示する
+    static let planWindowDays = 14
+    /// 日付を過ぎた献立を「未処理」として拾い続ける猶予日数。
+    /// これより古い未処理の献立は監視対象から外す(際限なく溜まらないようにする)
+    static let pastGraceDays = 30
+
+    /// 献立表に表示する日付。今日から `planWindowDays` 日分を基本にしつつ、
+    /// その先の日付に予定が入っていればその日も含める(遠い未来の予定が隠れないように)。
+    var planDates: [Date] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        var keys: Set<String> = []
+        var dates: [Date] = []
+        // 既定ウィンドウ(今日から planWindowDays 日)
+        for offset in 0..<Self.planWindowDays {
+            guard let date = calendar.date(byAdding: .day, value: offset, to: today) else { continue }
+            keys.insert(Self.dateKey(date))
+            dates.append(date)
+        }
+        // ウィンドウより先の日付に予定があれば、その日も表示対象に加える
+        let todayKey = Self.dateKey(today)
+        for entry in planEntries where entry.date >= todayKey && !keys.contains(entry.date) {
+            guard let date = Self.date(fromKey: entry.date) else { continue }
+            keys.insert(entry.date)
+            dates.append(date)
+        }
+        return dates.sorted()
     }
 
     func entries(on date: Date) -> [MealPlanEntry] {
         let key = Self.dateKey(date)
         return planEntries.filter { $0.date == key }
+    }
+
+    /// 日付を過ぎたのに材料をまだ買い物リストへ追加していない献立(買い忘れ防止に「未処理」として表示)。
+    /// 古い順に並べる。監視範囲(pastGraceDays)より前のものは含まれない。
+    var pastPendingEntries: [MealPlanEntry] {
+        let todayKey = Self.dateKey(Calendar.current.startOfDay(for: Date()))
+        return planEntries.filter { $0.date < todayKey && $0.ingredientsAddedAt == nil }
     }
 
     /// 献立エントリに対応するレシピ。削除済みなら nil(材料確認画面で使用)
@@ -149,6 +179,11 @@ final class MealPlannerViewModel {
         dateKeyFormatter.string(from: date)
     }
 
+    /// "yyyy-MM-dd" のキーから端末タイムゾーンの暦日を復元する(dateKey の逆変換)
+    static func date(fromKey key: String) -> Date? {
+        dateKeyFormatter.date(from: key)
+    }
+
     // MARK: - リアルタイム同期
 
     func startListening() {
@@ -169,9 +204,13 @@ final class MealPlannerViewModel {
                 } ?? []
             }
 
-        // 今日以降の献立のみ監視(過去分はDBに残るが画面には出さない)
+        // 今日以降の献立に加え、直近 pastGraceDays 日分も監視する。
+        // 過去分のうち「材料を追加済み」のものは処理済みなので画面に出さず(ローカルで除外)、
+        // 「未処理」の過去献立だけを買い忘れ防止として残す。それより古い過去分は監視しない。
+        let today = Calendar.current.startOfDay(for: Date())
+        let pastCutoff = Calendar.current.date(byAdding: .day, value: -Self.pastGraceDays, to: today) ?? today
         plansListener = plansRef
-            .whereField("date", isGreaterThanOrEqualTo: Self.dateKey(Date()))
+            .whereField("date", isGreaterThanOrEqualTo: Self.dateKey(pastCutoff))
             .addSnapshotListener { [weak self] snapshot, error in
                 guard let self else { return }
                 if let error {
@@ -183,8 +222,11 @@ final class MealPlannerViewModel {
                 let decoded = snapshot?.documents.compactMap {
                     try? $0.data(as: MealPlanEntry.self)
                 } ?? []
+                // 過去の処理済み献立は表示対象外(今日以降 or 未処理のみ残す)
+                let todayKey = Self.dateKey(Calendar.current.startOfDay(for: Date()))
+                let visible = decoded.filter { $0.date >= todayKey || $0.ingredientsAddedAt == nil }
                 // date + createdAt の複合ソートはローカルで行う(複合インデックス不要にするため)
-                self.planEntries = decoded.sorted {
+                self.planEntries = visible.sorted {
                     ($0.date, $0.createdAt ?? .distantPast) < ($1.date, $1.createdAt ?? .distantPast)
                 }
             }
