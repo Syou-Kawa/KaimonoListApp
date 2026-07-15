@@ -244,11 +244,12 @@ struct MealPlanView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
                 }
-                // 白の角丸パネルにして、チップ行(カレンダー)だけを背景付きで強調する。
+                // 最も明るい純白(#FFFFFF)の角丸パネルにして、チップ行(カレンダー)だけを区切る。
                 // バー全体(= 半透明ナビバーの裏まで)に敷くとヘッダー全体が塗られてしまうため、
-                // チップ行に限定した角丸背景にして左右に余白を取り、カレンダー領域だけを区切る。
-                // systemBackground でダークモードにも追従する(ライト=白)。
-                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12))
+                // チップ行に限定した角丸背景にして左右に余白を取り、カレンダー領域だけを強調する。
+                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
+                // うっすら白い光彩(グロー)を出して、蛍光っぽく明るく光って見せる(控えめ)。
+                .shadow(color: Color.white.opacity(0.5), radius: 5)
                 .padding(.horizontal, 12)
                 // カレンダー上部にほんの少しだけ余白を足す
                 .padding(.top, 4)
