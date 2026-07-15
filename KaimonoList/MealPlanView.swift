@@ -39,36 +39,32 @@ struct MealPlanView: View {
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
-                // ストリップは List のオーバーレイではなく上に並ぶヘッダーにする。
-                // こうすると scrollTo での移動先セクションがストリップの下に潜らず、
-                // 一番大きい献立名がカレンダーに隠れて重なることがなくなる。
-                VStack(spacing: 0) {
-                    // 上部に日付ストリップを固定し、タップでその日のセクションへジャンプする。
-                    // 目的の日まで長くスクロールせずに移動・俯瞰できるようにする。
-                    dateStrip(proxy: proxy)
-
-                    List {
-                        if viewModel.pendingEntryCount > 0 {
-                            Section {
-                                Button {
-                                    isShowingWeeklyShopping = true
-                                } label: {
-                                    Label("まとめてリストに追加", systemImage: "cart.badge.plus")
-                                }
-                            } footer: {
-                                Text("献立の材料をまとめて見て、選んで買い物リストへ追加できます。")
+                List {
+                    if viewModel.pendingEntryCount > 0 {
+                        Section {
+                            Button {
+                                isShowingWeeklyShopping = true
+                            } label: {
+                                Label("まとめてリストに追加", systemImage: "cart.badge.plus")
                             }
-                        }
-
-                        if !viewModel.pastPendingEntries.isEmpty {
-                            pastPendingSection
-                        }
-
-                        ForEach(viewModel.planDates, id: \.self) { date in
-                            daySection(for: date)
+                        } footer: {
+                            Text("献立の材料をまとめて見て、選んで買い物リストへ追加できます。")
                         }
                     }
+
+                    if !viewModel.pastPendingEntries.isEmpty {
+                        pastPendingSection
+                    }
+
+                    ForEach(viewModel.planDates, id: \.self) { date in
+                        daySection(for: date)
+                    }
                 }
+                // 日付ストリップを上部に固定する。
+                // iOS 26 では safeAreaBar を使うと「スクロール端エフェクトを拡張」するため、
+                // 中身がバーの裏を流れるとシステム標準の透ける効果が出て、リスト・共有タブの
+                // ヘッダーと同じ見た目になる。iOS 26 未満は safeAreaInset+マテリアルにフォールバック。
+                .modifier(CalendarBar { dateStrip(proxy: proxy) })
             }
             .navigationTitle("献立")
             .navigationBarTitleDisplayMode(.inline)
@@ -248,8 +244,15 @@ struct MealPlanView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
                 }
-                // ヘッダー・リストとの境目をはっきりさせる区切り線
-                Divider()
+                // 白の角丸パネルにして、チップ行(カレンダー)だけを背景付きで強調する。
+                // バー全体(= 半透明ナビバーの裏まで)に敷くとヘッダー全体が塗られてしまうため、
+                // チップ行に限定した角丸背景にして左右に余白を取り、カレンダー領域だけを区切る。
+                // systemBackground でダークモードにも追従する(ライト=白)。
+                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, 12)
+                // カレンダー上部にほんの少しだけ余白を足す
+                .padding(.top, 4)
+                .padding(.bottom, 6)
             }
             // 選択中の日をストリップ内でも見える位置へ寄せる
             .onChange(of: selectedDateKey) { _, newValue in
@@ -257,8 +260,6 @@ struct MealPlanView: View {
                 withAnimation { stripProxy.scrollTo(newValue, anchor: .center) }
             }
         }
-        // 不透明な背景にして、スクロールで下を通る献立の文字が透けて重ならないようにする
-        .background(Color(.systemGroupedBackground))
     }
 
     // MARK: - 日ごとのセクション
@@ -438,6 +439,26 @@ private struct PlanRow: View {
         .onTapGesture(perform: onShowDetail)
         .accessibilityAddTraits(.isButton)
         .accessibilityHint("材料を確認")
+    }
+}
+
+// MARK: - カレンダーバーの取り付け
+
+/// 日付ストリップを上部に固定して取り付けるモディファイア。
+/// iOS 26 では safeAreaBar でスクロール端エフェクトを拡張し、中身がバーの裏を流れて
+/// システム標準の“透ける”効果になる(他タブのヘッダーと同じ見た目)。
+/// iOS 26 未満は safeAreaInset + バー用マテリアルにフォールバックする。
+private struct CalendarBar<Bar: View>: ViewModifier {
+    @ViewBuilder let bar: () -> Bar
+
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.safeAreaBar(edge: .top, spacing: 0, content: bar)
+        } else {
+            content.safeAreaInset(edge: .top, spacing: 0) {
+                bar().background(.bar)
+            }
+        }
     }
 }
 
