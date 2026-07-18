@@ -4,7 +4,8 @@ import FirebaseFirestore
 
 /// 食べた記録(献立の振り返り)の状態管理。
 /// 献立プランナー(MealPlannerViewModel)が今日以降＋直近しか保持しないのに対し、
-/// こちらは「日付が過ぎた過去の献立」を新しい順にページ取得して振り返れるようにする。
+/// こちらは「日付が過ぎた過去の献立」を月単位で取得して振り返れるようにする。
+/// ◀▶・年月ピッカーで任意の月へジャンプでき、遠い過去も素早く辿れる。
 /// 読み取り専用(記録の閲覧のみ)なので、リアルタイム監視はせず都度取得する。
 @MainActor
 @Observable
@@ -12,26 +13,21 @@ final class MealHistoryViewModel {
 
     // MARK: - 状態
 
-    /// 取得済みの過去の献立(date 降順)。「もっと見る」で古い分を末尾に足していく
+    /// 選択中の月(月初の Date)。◀▶ や年月ピッカーで切り替える
+    private(set) var selectedMonth: Date
+    /// 選択中の月の記録(date 降順)
     private(set) var entries: [MealPlanEntry] = []
     /// 材料確認用のレシピ表(recipeId → Recipe)。初回に一度だけ取得する
     private(set) var recipesById: [String: Recipe] = [:]
     /// レシピ帳のレシピ(createdAt 順)。記録追加シートのレシピ選択に使う
     private(set) var recipes: [Recipe] = []
-    /// 初回(または再読み込み)の読み込み中
+    /// 選択中の月の読み込み中
     private(set) var isLoading = false
-    /// 「もっと見る」での追加読み込み中
-    private(set) var isLoadingMore = false
-    /// さらに古い記録が残っているか(= 直前のページが満杯だったか)
-    private(set) var hasMore = true
-    /// 初回読み込みを済ませたか(.task の多重実行を防ぐ)
-    private(set) var hasLoadedOnce = false
+    /// レシピ表を取得済みか(.task の多重実行を防ぐ)
+    private(set) var hasLoadedRecipes = false
     var errorMessage: String?
     /// 「○/○に記録しました」などの操作フィードバック
     var infoMessage: String?
-
-    /// 1回の取得件数。「もっと見る」でこの件数ずつ古い記録を足す
-    static let pageSize = 40
 
     // MARK: - 依存
 
@@ -39,8 +35,6 @@ final class MealHistoryViewModel {
     let currentUid: String
     let currentUserName: String
     private let db = Firestore.firestore()
-    /// 次ページ取得の起点にする、直近ページの最後のドキュメント(カーソル)
-    private var lastDocument: DocumentSnapshot?
 
     private var householdRef: DocumentReference {
         db.collection("households").document(householdId)
@@ -52,22 +46,24 @@ final class MealHistoryViewModel {
         self.householdId = householdId
         self.currentUid = currentUid
         self.currentUserName = currentUserName
+        self.selectedMonth = Self.startOfMonth(Date())
     }
 
     // MARK: - 読み込み
 
-    /// 初回表示時に一度だけ呼ぶ。レシピ表と履歴の最初のページを読み込む。
+    /// 初回表示時に呼ぶ。レシピ表を一度だけ取得し、選択中の月(既定は今月)の記録を読み込む。
     func loadInitial() async {
-        guard !hasLoadedOnce else { return }
-        hasLoadedOnce = true
-        await loadRecipes()
-        await loadNextPage(reset: true)
+        if !hasLoadedRecipes {
+            hasLoadedRecipes = true
+            await loadRecipes()
+        }
+        await loadSelectedMonth()
     }
 
-    /// 引き下げ更新。レシピ表と履歴を先頭から取り直す。
+    /// 引き下げ更新。レシピ表と選択中の月を取り直す。
     func reload() async {
         await loadRecipes()
-        await loadNextPage(reset: true)
+        await loadSelectedMonth()
     }
 
     /// 材料確認に使うレシピ表を取得する。失敗しても致命的ではない(材料が見られないだけ)。
@@ -88,48 +84,67 @@ final class MealHistoryViewModel {
         }
     }
 
-    /// 過去の献立(今日より前)を新しい順に1ページ取得する。
-    /// - Parameter reset: true なら先頭から取り直す(カーソルを捨てる)。false は続きを追加取得する。
+    /// 選択中の月の記録を新しい順(date 降順)に取得する。
+    /// 「記録」は今日より前のみ扱うため、今月を見ているときは今日以降(まだ食べていない予定)を除く。
     /// `date` 単一フィールドの範囲＋並び替えなので複合インデックスは不要。
-    func loadNextPage(reset: Bool = false) async {
-        if reset {
-            isLoading = true
-            lastDocument = nil
-            hasMore = true
-        } else {
-            guard hasMore, !isLoadingMore, !isLoading else { return }
-            isLoadingMore = true
-        }
-        defer {
-            isLoading = false
-            isLoadingMore = false
-        }
+    func loadSelectedMonth() async {
+        isLoading = true
+        defer { isLoading = false }
 
-        let todayKey = MealPlannerViewModel.dateKey(Calendar.current.startOfDay(for: Date()))
-        var query: Query = plansRef
-            .whereField("date", isLessThan: todayKey)
-            .order(by: "date", descending: true)
-            .limit(to: Self.pageSize)
-        if let lastDocument, !reset {
-            query = query.start(afterDocument: lastDocument)
+        let calendar = Calendar.current
+        let monthStart = selectedMonth
+        let nextMonthStart = calendar.date(byAdding: .month, value: 1, to: monthStart) ?? monthStart
+        let todayStart = calendar.startOfDay(for: Date())
+        // 今月を見ているときは今日以降を除く(記録は今日より前のみ)
+        let upperBound = min(nextMonthStart, todayStart)
+        guard monthStart < upperBound else {
+            // 未来の月など、記録がありえない範囲は空にする
+            entries = []
+            return
         }
 
         do {
-            let snapshot = try await query.getDocuments()
-            let page = snapshot.documents.compactMap { try? $0.data(as: MealPlanEntry.self) }
-            if reset {
-                entries = page
-            } else {
-                entries += page
-            }
-            lastDocument = snapshot.documents.last
-            // ページが満杯なら、まだ続きがある可能性がある
-            hasMore = snapshot.documents.count == Self.pageSize
+            let snapshot = try await plansRef
+                .whereField("date", isGreaterThanOrEqualTo: MealPlannerViewModel.dateKey(monthStart))
+                .whereField("date", isLessThan: MealPlannerViewModel.dateKey(upperBound))
+                .order(by: "date", descending: true)
+                .getDocuments()
+            entries = snapshot.documents.compactMap { try? $0.data(as: MealPlanEntry.self) }
         } catch {
             if !error.isFirestorePermissionDenied {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    // MARK: - 月の移動
+
+    /// これ以上新しい月(今月より先)へは進めない(未来は記録がないため)
+    var canGoToNextMonth: Bool {
+        selectedMonth < Self.startOfMonth(Date())
+    }
+
+    func goToPreviousMonth() async {
+        selectedMonth = Calendar.current.date(byAdding: .month, value: -1, to: selectedMonth) ?? selectedMonth
+        await loadSelectedMonth()
+    }
+
+    func goToNextMonth() async {
+        guard canGoToNextMonth else { return }
+        selectedMonth = Calendar.current.date(byAdding: .month, value: 1, to: selectedMonth) ?? selectedMonth
+        await loadSelectedMonth()
+    }
+
+    /// 指定した日付が属する月へジャンプする(未来の月は今月に丸める)
+    func jump(to date: Date) async {
+        let target = Self.startOfMonth(date)
+        selectedMonth = min(target, Self.startOfMonth(Date()))
+        await loadSelectedMonth()
+    }
+
+    /// その日付が属する月の1日(月初)を返す
+    static func startOfMonth(_ date: Date, calendar: Calendar = .current) -> Date {
+        calendar.dateInterval(of: .month, for: date)?.start ?? calendar.startOfDay(for: date)
     }
 
     /// 履歴エントリに対応するレシピ。削除済みなら nil(材料確認シートで使用)
@@ -166,8 +181,10 @@ final class MealHistoryViewModel {
                 ingredientsAddedAt: nil
             )
             _ = try plansRef.addDocument(from: entry)
-            // 追加した記録が一覧に出るよう先頭から取り直す
-            await reload()
+            // マテリアライズした新規レシピも材料確認できるようレシピ表を取り直し、
+            // 記録した日の月へ移動して一覧を更新する(その記録が見えるように)
+            await loadRecipes()
+            await jump(to: date)
             // 今日の分は「記録(過去)」ではなく献立タブの今日に入るので、その旨を伝える
             infoMessage = Calendar.current.isDateInToday(date)
                 ? "今日の献立に追加しました(「献立」タブに表示されます)"
@@ -225,6 +242,10 @@ struct MealHistoryView: View {
     @State private var detailTarget: MealPlanEntry?
     /// 記録追加シートの表示状態
     @State private var isAddingRecord = false
+    /// 年月ピッカー(任意の月へジャンプ)の表示状態
+    @State private var isPickingMonth = false
+    /// カレンダーで選択中の日("yyyy-MM-dd")。nil のときはその月の最新記録日を既定選択にする
+    @State private var selectedDateKey: String?
 
     init(householdId: String, currentUid: String, currentUserName: String) {
         _viewModel = State(initialValue: MealHistoryViewModel(
@@ -237,22 +258,16 @@ struct MealHistoryView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if viewModel.entries.isEmpty {
-                    if viewModel.isLoading {
-                        ProgressView()
-                    } else {
-                        ContentUnavailableView {
-                            Label("まだ記録がありません", systemImage: "clock.arrow.circlepath")
-                        } description: {
-                            Text("献立に入れた料理は、日付が過ぎるとここで振り返れます。食べたものをあとから記録することもできます。")
-                        } actions: {
-                            Button("記録する") { isAddingRecord = true }
-                        }
-                    }
+                if viewModel.isLoading && viewModel.entries.isEmpty {
+                    ProgressView()
                 } else {
-                    historyList
+                    calendarContent
                 }
             }
+            // 月が変わったら選択日をリセットし、その月の最新記録日を既定選択に戻す
+            .onChange(of: viewModel.selectedMonth) { _, _ in selectedDateKey = nil }
+            // 月ナビ(◀ 年月 ▶)を上部に固定して、任意の月へ素早く移動できるようにする
+            .safeAreaInset(edge: .top, spacing: 0) { monthNavigator }
             .navigationTitle("食べた記録")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -270,6 +285,12 @@ struct MealHistoryView: View {
             .sheet(isPresented: $isAddingRecord) {
                 RecordAddSheet(viewModel: viewModel)
                     .presentationDetents([.large])
+            }
+            .sheet(isPresented: $isPickingMonth) {
+                MonthPickerSheet(selectedMonth: viewModel.selectedMonth) { month in
+                    Task { await viewModel.jump(to: month) }
+                }
+                .presentationDetents([.medium])
             }
             .sheet(item: $detailTarget) { entry in
                 MealHistoryDetailSheet(viewModel: viewModel, entry: entry)
@@ -302,55 +323,133 @@ struct MealHistoryView: View {
         )
     }
 
-    private var historyList: some View {
-        List {
-            ForEach(groupedByDate, id: \.key) { group in
-                Section {
-                    ForEach(group.entries) { entry in
-                        HistoryRow(entry: entry)
-                            .contentShape(Rectangle())
-                            .onTapGesture { detailTarget = entry }
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityHint("材料を確認")
-                    }
-                } header: {
-                    Text(Self.sectionTitle(for: group.key))
-                }
-            }
+    // MARK: - カレンダー表示
 
-            if viewModel.hasMore {
-                Section {
-                    Button {
-                        Task { await viewModel.loadNextPage() }
-                    } label: {
-                        if viewModel.isLoadingMore {
-                            ProgressView()
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Text("もっと見る")
-                                .frame(maxWidth: .infinity)
+    /// 月のカレンダーと、選択した日の記録を縦に並べたスクロール本体。
+    private var calendarContent: some View {
+        ScrollView {
+            VStack(spacing: 16) {
+                MonthCalendarGrid(
+                    month: viewModel.selectedMonth,
+                    entriesByDay: entriesByDay,
+                    selectedKey: displayKey
+                ) { key in
+                    selectedDateKey = key
+                }
+                Divider()
+                selectedDaySection
+            }
+            .padding()
+        }
+    }
+
+    /// 選択中の日(displayKey)の記録一覧。記録が無い日は「記録なし」を示す。
+    @ViewBuilder
+    private var selectedDaySection: some View {
+        if let key = displayKey {
+            let dayEntries = entriesByDay[key] ?? []
+            VStack(alignment: .leading, spacing: 8) {
+                Text(Self.sectionTitle(for: key))
+                    .font(.headline)
+                if dayEntries.isEmpty {
+                    Text("この日は記録がありません")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                } else {
+                    ForEach(dayEntries) { entry in
+                        Button {
+                            detailTarget = entry
+                        } label: {
+                            HistoryRow(entry: entry)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("材料を確認")
+                        Divider()
                     }
-                    .disabled(viewModel.isLoadingMore)
                 }
-                .listRowBackground(Color.clear)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            // その月に記録が1件も無い
+            VStack(spacing: 8) {
+                Text("この月は記録がありません")
+                    .foregroundStyle(.secondary)
+                Button("記録する") { isAddingRecord = true }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 24)
         }
     }
 
-    /// date 降順で取得済みのエントリを、連続する同一日ごとにまとめる。
-    /// (取得順がすでに日付降順なので、隣り合う同じ日をひとまとめにするだけでよい)
-    private var groupedByDate: [(key: String, entries: [MealPlanEntry])] {
-        var groups: [(key: String, entries: [MealPlanEntry])] = []
-        for entry in viewModel.entries {
-            if groups.last?.key == entry.date {
-                groups[groups.count - 1].entries.append(entry)
-            } else {
-                groups.append((key: entry.date, entries: [entry]))
-            }
-        }
-        return groups
+    /// 選択中の日("yyyy-MM-dd")。ユーザーが日をタップしていればその日、
+    /// 未選択ならその月の最新記録日(記録が無ければ nil)。
+    private var displayKey: String? {
+        selectedDateKey ?? viewModel.entries.first?.date
     }
+
+    /// 取得済みの記録を日付キーごとにまとめる(その日の複数品をまとめて持つ)
+    private var entriesByDay: [String: [MealPlanEntry]] {
+        Dictionary(grouping: viewModel.entries, by: { $0.date })
+    }
+
+    // MARK: - 月ナビ(◀ 年月 ▶)
+
+    /// 上部に固定する月の移動バー。◀▶で前後の月へ、中央の年月をタップで年月ピッカーを開く。
+    private var monthNavigator: some View {
+        HStack {
+            Button {
+                Task { await viewModel.goToPreviousMonth() }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.headline)
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel("前の月")
+
+            Spacer()
+
+            Button {
+                isPickingMonth = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(Self.monthTitle(viewModel.selectedMonth))
+                        .font(.headline)
+                    Image(systemName: "chevron.down")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.primary)
+            }
+            .accessibilityLabel("月を選ぶ(現在 \(Self.monthTitle(viewModel.selectedMonth)))")
+
+            Spacer()
+
+            Button {
+                Task { await viewModel.goToNextMonth() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.headline)
+                    .frame(width: 44, height: 44)
+            }
+            .disabled(!viewModel.canGoToNextMonth)
+            .accessibilityLabel("次の月")
+        }
+        .padding(.horizontal, 8)
+        .background(.bar)
+    }
+
+    private static func monthTitle(_ date: Date) -> String {
+        monthFormatter.string(from: date)
+    }
+
+    private static let monthFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "yyyy年M月"
+        return formatter
+    }()
 
     // MARK: - 日付見出し
 
@@ -379,6 +478,115 @@ struct MealHistoryView: View {
         formatter.dateFormat = "yyyy/M/d(E)"
         return formatter
     }()
+}
+
+// MARK: - 月カレンダーグリッド
+
+/// 月のカレンダー(7列)。記録のある日は薄い塗り＋その日の料理の絵文字を表示し、
+/// 同じ日に複数品あれば件数バッジを付ける。選択中の日は枠で強調。
+/// 日をタップすると onSelect(日付キー) を呼ぶ。
+private struct MonthCalendarGrid: View {
+    /// 表示する月(月初の Date)
+    let month: Date
+    /// 日付キー("yyyy-MM-dd")→ その日の記録
+    let entriesByDay: [String: [MealPlanEntry]]
+    /// 選択中の日付キー(枠で強調)
+    let selectedKey: String?
+    let onSelect: (String) -> Void
+
+    private let calendar = Calendar.current
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
+    /// 曜日記号(index 0 = 日曜)。ロケールに依存せず日本語表記にする
+    private static let baseWeekdaySymbols = ["日", "月", "火", "水", "木", "金", "土"]
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 4) {
+                ForEach(orderedWeekdaySymbols, id: \.self) { symbol in
+                    Text(symbol)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            LazyVGrid(columns: columns, spacing: 4) {
+                ForEach(cells.indices, id: \.self) { index in
+                    if let day = cells[index] {
+                        dayCell(day)
+                    } else {
+                        Color.clear.frame(height: 46)
+                    }
+                }
+            }
+        }
+    }
+
+    /// 先頭の空白(月初の曜日オフセット)＋ 1〜末日 を並べた配列(空白は nil)
+    private var cells: [Int?] {
+        guard let range = calendar.range(of: .day, in: .month, for: month) else { return [] }
+        let firstWeekday = calendar.component(.weekday, from: month)   // 1=日〜7=土
+        let leading = (firstWeekday - calendar.firstWeekday + 7) % 7
+        return Array(repeating: nil, count: leading) + range.map { Optional($0) }
+    }
+
+    /// 週の開始曜日(firstWeekday)に合わせて並べ替えた曜日記号
+    private var orderedWeekdaySymbols: [String] {
+        let start = calendar.firstWeekday - 1
+        return (0..<7).map { Self.baseWeekdaySymbols[($0 + start) % 7] }
+    }
+
+    @ViewBuilder
+    private func dayCell(_ day: Int) -> some View {
+        let key = dayKey(day)
+        let dayEntries = entriesByDay[key] ?? []
+        let hasRecords = !dayEntries.isEmpty
+        let isSelected = key == selectedKey
+
+        Button {
+            onSelect(key)
+        } label: {
+            VStack(spacing: 2) {
+                Text("\(day)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(dayEntries.first?.recipeEmoji ?? " ")
+                    .font(.body)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 46)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isSelected ? Color.accentColor.opacity(0.18)
+                          : (hasRecords ? Color.accentColor.opacity(0.08) : Color.clear))
+            )
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                }
+            }
+            .overlay(alignment: .topTrailing) {
+                if dayEntries.count > 1 {
+                    Text("\(dayEntries.count)")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: 14, minHeight: 14)
+                        .background(Circle().fill(Color.accentColor))
+                        .padding(2)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(day)日\(hasRecords ? "、記録\(dayEntries.count)件" : "、記録なし")")
+    }
+
+    /// その月の day 日の日付キー("yyyy-MM-dd")
+    private func dayKey(_ day: Int) -> String {
+        var components = calendar.dateComponents([.year, .month], from: month)
+        components.day = day
+        let date = calendar.date(from: components) ?? month
+        return MealPlannerViewModel.dateKey(date)
+    }
 }
 
 // MARK: - 記録の行
@@ -635,5 +843,66 @@ private struct RecordAddSheet: View {
     private func ingredientSummary(_ recipe: Recipe) -> String {
         let names = recipe.ingredients.prefix(3).map(\.name).joined(separator: "・")
         return recipe.ingredients.count > 3 ? "\(names) ほか" : names
+    }
+}
+
+// MARK: - 年月ピッカーシート(任意の月へジャンプ)
+
+/// 年と月をホイールで選んで、その月へジャンプするシート。
+/// 遠い過去の月へも一気に移動できるようにする。未来の月は表示側で今月に丸める。
+private struct MonthPickerSheet: View {
+    let selectedMonth: Date
+    let onSelect: (Date) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var year: Int
+    @State private var month: Int
+
+    init(selectedMonth: Date, onSelect: @escaping (Date) -> Void) {
+        self.selectedMonth = selectedMonth
+        self.onSelect = onSelect
+        let calendar = Calendar.current
+        _year = State(initialValue: calendar.component(.year, from: selectedMonth))
+        _month = State(initialValue: calendar.component(.month, from: selectedMonth))
+    }
+
+    /// 選べる年の範囲(過去5年〜今年)
+    private var years: [Int] {
+        let current = Calendar.current.component(.year, from: Date())
+        return Array((current - 5)...current)
+    }
+
+    var body: some View {
+        NavigationStack {
+            HStack(spacing: 0) {
+                Picker("年", selection: $year) {
+                    ForEach(years, id: \.self) { Text("\(String($0))年").tag($0) }
+                }
+                .pickerStyle(.wheel)
+                Picker("月", selection: $month) {
+                    ForEach(1...12, id: \.self) { Text("\($0)月").tag($0) }
+                }
+                .pickerStyle(.wheel)
+            }
+            .navigationTitle("月を選ぶ")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("キャンセル") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("表示") {
+                        var components = DateComponents()
+                        components.year = year
+                        components.month = month
+                        components.day = 1
+                        if let date = Calendar.current.date(from: components) {
+                            onSelect(date)
+                        }
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
