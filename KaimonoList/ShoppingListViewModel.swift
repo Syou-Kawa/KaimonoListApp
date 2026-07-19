@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftUI
 import FirebaseFirestore
+import WidgetKit
 
 @MainActor
 @Observable
@@ -108,6 +109,35 @@ final class ShoppingListViewModel {
         return categories.first(where: { $0.matcherKey == key })?.id
     }
 
+    // MARK: - ウィジェット連携
+
+    /// 現在の未購入リストを App Group 共有領域へ書き出し、ホーム画面ウィジェットを更新する。
+    /// items / categories が変わるたびに呼ぶ(ウィジェットは Firebase に触れないため、
+    /// アプリが受け取った最新の内容をここでスナップショットとして渡す)。
+    private func publishWidgetSnapshot() {
+        let groups = Self.uncheckedGroups(items: items, categories: categories)
+        var sharedItems: [SharedShoppingSnapshot.Item] = []
+        for group in groups {
+            // group.title は "🥬 野菜・果物" 形式。先頭の1文字(絵文字)だけ取り出す
+            let emoji = group.title.first.map(String.init) ?? "🛒"
+            for item in group.items {
+                sharedItems.append(SharedShoppingSnapshot.Item(
+                    id: item.id ?? UUID().uuidString,
+                    name: item.name,
+                    quantity: item.quantity,
+                    categoryEmoji: emoji
+                ))
+            }
+        }
+        let snapshot = SharedShoppingSnapshot(
+            uncheckedItems: sharedItems,
+            uncheckedCount: sharedItems.count,
+            updatedAt: Date()
+        )
+        SharedShoppingStore.save(snapshot)
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
     // MARK: - 依存
 
     let householdId: String
@@ -155,6 +185,8 @@ final class ShoppingListViewModel {
                 self.categories = snapshot?.documents.compactMap {
                     try? $0.data(as: ItemCategory.self)
                 } ?? []
+                // カテゴリの絵文字・並び順もウィジェット表示に反映する
+                self.publishWidgetSnapshot()
             }
 
         itemsListener = itemsRef
@@ -170,6 +202,8 @@ final class ShoppingListViewModel {
                 self.items = snapshot?.documents.compactMap {
                     try? $0.data(as: ShoppingItem.self)
                 } ?? []
+                // 未購入リストが変わったのでウィジェットを更新する
+                self.publishWidgetSnapshot()
             }
 
         recipesListener = recipesRef
