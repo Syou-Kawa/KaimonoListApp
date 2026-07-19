@@ -31,10 +31,22 @@ struct OnboardingView: View {
             message: "1週間分の献立を決めて、必要な材料をまとめて買い物リストへ。レシピ帳に登録しておけば、毎週の献立づくりがぐっと楽になります。"
         ),
         OnboardingPage(
+            symbol: "clock.arrow.circlepath",
+            tint: .pink,
+            title: "記録をふり返る",
+            message: "「記録」タブでは、これまで作った献立を月ごとのカレンダーでふり返れます。◀▶や年月の選択で好きな月へジャンプ。作ったものを後から記録することもできるので、家族の食事の記録として残せます。"
+        ),
+        OnboardingPage(
             symbol: "person.2.fill",
             tint: .blue,
             title: "家族と共有",
             message: "「共有」タブの招待コードを家族に伝えると、同じリストと献立をリアルタイムで共有できます。誰が追加したかも一目で分かります。"
+        ),
+        OnboardingPage(
+            symbol: "square.grid.2x2.fill",
+            tint: .purple,
+            title: "ホーム画面ウィジェット",
+            message: "買うものリストはホーム画面にも置けます。アプリを開かなくても残りの品数がひと目で分かって便利。ホーム画面を長押し → 左上の + →「買い物リスト」で追加できます。便利そうなら試してみてください。"
         ),
     ]
 
