@@ -17,6 +17,8 @@ struct MealPlanView: View {
     @State private var isConfirmingClearAll = false
     /// 週間まとめ買いシートの表示状態
     @State private var isShowingWeeklyShopping = false
+    /// AI 献立アシスタントのシートの表示状態
+    @State private var isShowingAI = false
     /// 上部の日付ストリップで選択中の日(ハイライト表示に使用)。"yyyy-MM-dd" キー
     @State private var selectedDateKey: String?
     /// 初回表示で今日の位置までスクロール済みか。
@@ -97,6 +99,12 @@ struct MealPlanView: View {
                             pickTarget = PickTarget(date: Calendar.current.startOfDay(for: Date()),
                                                     allowsDateSelection: true)
                         }
+                        // AI 献立支援は対応端末(iOS 26+ / Apple Intelligence)でのみ出す
+                        if viewModel.isAIAvailable {
+                            Button("AIにおまかせ", systemImage: "sparkles") {
+                                isShowingAI = true
+                            }
+                        }
                         Divider()
                         Button("献立をすべて削除", systemImage: "trash", role: .destructive) {
                             isConfirmingClearAll = true
@@ -110,6 +118,10 @@ struct MealPlanView: View {
             }
             .sheet(isPresented: $isShowingWeeklyShopping) {
                 WeeklyShoppingView(viewModel: viewModel)
+            }
+            .sheet(isPresented: $isShowingAI) {
+                MealAISheet(viewModel: viewModel)
+                    .presentationDetents([.large])
             }
             .sheet(item: $pickTarget) { target in
                 RecipePickerSheet(viewModel: viewModel, date: target.date,
@@ -258,12 +270,14 @@ struct MealPlanView: View {
                     .padding(.horizontal)
                     .padding(.vertical, 8)
                 }
-                // 最も明るい純白(#FFFFFF)の角丸パネルにして、チップ行(カレンダー)だけを区切る。
+                // チップ行(カレンダー)だけを角丸パネルで区切る。
                 // バー全体(= 半透明ナビバーの裏まで)に敷くとヘッダー全体が塗られてしまうため、
                 // チップ行に限定した角丸背景にして左右に余白を取り、カレンダー領域だけを強調する。
-                .background(Color.white, in: RoundedRectangle(cornerRadius: 12))
-                // うっすら白い光彩(グロー)を出して、蛍光っぽく明るく光って見せる(控えめ)。
-                .shadow(color: Color.white.opacity(0.5), radius: 5)
+                // 背景はシステム適応色にして、ダークモードでも日付の文字(.primary)が
+                // 背景と同化せず読めるようにする(純白固定だとダークで白地に白文字になる)。
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12))
+                // パネルを少し浮かせる控えめな影(ライト/ダーク両方で自然に見える黒の薄影)。
+                .shadow(color: Color.black.opacity(0.12), radius: 5)
                 .padding(.horizontal, 12)
                 // カレンダー上部にほんの少しだけ余白を足す
                 .padding(.top, 4)
@@ -605,6 +619,166 @@ private struct SuggestionRow: View {
     }
 }
 
+// MARK: - AI 献立アシスタント(端末内 Foundation Models・対応端末のみ)
+
+/// 栄養バランスのアドバイスと、数日分の献立のまとめ提案を AI に依頼できるシート。
+/// 端末内で処理するため購入履歴や献立が外部に送られることはない。
+private struct MealAISheet: View {
+    let viewModel: MealPlannerViewModel
+
+    @Environment(\.dismiss) private var dismiss
+    /// まとめ提案の日数
+    @State private var days = 3
+    /// 提案を献立へ追加するときの人数
+    @State private var servings = MealPlanEntry.defaultServings
+
+    /// 提案を割り当てる基準日(今日)
+    private var baseDate: Date { Calendar.current.startOfDay(for: Date()) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button {
+                        Task { await viewModel.requestNutritionAdvice() }
+                    } label: {
+                        Label("これからの献立をチェック", systemImage: "heart.text.square")
+                    }
+                    .disabled(viewModel.isRunningAI)
+
+                    if let advice = viewModel.aiAdvice {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(advice.summary)
+                            ForEach(advice.tips, id: \.self) { tip in
+                                Label(tip, systemImage: "leaf")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                } header: {
+                    Text("栄養バランスのアドバイス")
+                } footer: {
+                    Text("これからの献立全体を見て、栄養の偏りをやさしく指摘します。カロリー等の数値は出しません。")
+                }
+
+                Section {
+                    Stepper(value: $servings, in: MealPlannerViewModel.servingsRange) {
+                        HStack {
+                            Text("人数")
+                            Spacer()
+                            Text("\(servings)人前")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text("提案を献立に追加するときの人数です。")
+                }
+
+                Section {
+                    Stepper(value: $days, in: 2...7) {
+                        HStack {
+                            Text("日数")
+                            Spacer()
+                            Text("\(days)日分")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Button {
+                        Task { await viewModel.requestMealPlan(days: days) }
+                    } label: {
+                        Label("\(days)日分の献立を提案してもらう", systemImage: "sparkles")
+                    }
+                    .disabled(viewModel.isRunningAI)
+
+                    if !viewModel.aiProposal.isEmpty {
+                        ForEach(viewModel.aiProposal) { meal in
+                            proposalRow(meal)
+                        }
+                        Button {
+                            viewModel.acceptAllProposals(from: baseDate, servings: servings)
+                            dismiss()
+                        } label: {
+                            Label("すべて献立に追加", systemImage: "calendar.badge.plus")
+                        }
+                    }
+                } header: {
+                    Text("数日分の献立をAIに提案")
+                } footer: {
+                    Text("好み・旬・栄養の偏りを考えて、今日から順に提案します。各行の「追加」でその日に入れられます。")
+                }
+
+                if viewModel.isRunningAI {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("AIが考えています…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else if let message = viewModel.aiMessage {
+                    Section {
+                        Text(message)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("AIにおまかせ")
+            .navigationBarTitleDisplayMode(.inline)
+            // シートを開くたびに前回の結果をクリアする(古い献立に対する結果が残らないように)
+            .onAppear { viewModel.resetAIResults() }
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("閉じる") { dismiss() }
+                }
+            }
+        }
+    }
+
+    /// まとめ提案1件の行。タップでその日の献立に追加する。
+    @ViewBuilder
+    private func proposalRow(_ meal: MealAIAssistant.ProposedMeal) -> some View {
+        let date = Calendar.current.date(byAdding: .day, value: meal.dayOffset, to: baseDate) ?? baseDate
+        Button {
+            viewModel.acceptProposal(meal, on: date, servings: servings)
+        } label: {
+            HStack(spacing: 12) {
+                Text(meal.recipe.emoji)
+                    .font(.title3)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(Self.dayLabel(date))
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                        Text(meal.recipe.name)
+                            .foregroundStyle(.primary)
+                    }
+                    if let reason = meal.reason {
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer()
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(.tint)
+            }
+        }
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ja_JP")
+        formatter.dateFormat = "M/d(E)"
+        return formatter
+    }()
+
+    private static func dayLabel(_ date: Date) -> String {
+        dayFormatter.string(from: date)
+    }
+}
+
 // MARK: - 人数編集シート
 
 /// 追加済みの献立の人数を変更する小さなシート
@@ -850,6 +1024,60 @@ private struct RecipePickerSheet: View {
                     }
                 }
 
+                // 旬の食材で新しいレシピを創作する(対応端末のみ・検索中は隠す)
+                if viewModel.isAIAvailable && !isSearching {
+                    Section {
+                        Button {
+                            Task { await viewModel.requestInventedRecipe() }
+                        } label: {
+                            Label("旬の食材でAIにレシピを作ってもらう", systemImage: "sparkles")
+                        }
+                        .disabled(viewModel.isRunningAI)
+
+                        if viewModel.isRunningAI {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                Text("AIが考えています…")
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else if let message = viewModel.aiMessage {
+                            Text(message)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        if let invented = viewModel.aiInventedRecipe {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 8) {
+                                    Text(invented.emoji)
+                                    Text(invented.name)
+                                        .font(.headline)
+                                }
+                                Text("材料:" + invented.ingredients.map(\.name).joined(separator: "、"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if let memo = invented.memo, !memo.isEmpty {
+                                    Text(memo)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+
+                            Button {
+                                viewModel.acceptInventedRecipe(invented, on: selectedDate, servings: servings)
+                                dismiss()
+                            } label: {
+                                Label("この料理を献立に追加", systemImage: "plus.circle")
+                            }
+                        }
+                    } header: {
+                        Text("AIにレシピを作ってもらう")
+                    } footer: {
+                        Text("今の旬の食材を使った新しい料理を1品考えます。追加すると自動でマイレシピに登録されます。")
+                    }
+                }
+
                 if !myRecipes.isEmpty {
                     Section("マイレシピ") {
                         ForEach(myRecipes) { recipe in
@@ -875,8 +1103,13 @@ private struct RecipePickerSheet: View {
                 }
             }
             .searchable(text: $searchText, prompt: "料理名・食材で検索")
-            // シートを開くたびに直近の購入履歴から提案を再生成する
-            .task { await viewModel.generateSuggestions() }
+            // シートを開くたびに直近の購入履歴から提案を再生成する。
+            // 前回の AI 生成結果(創作レシピ)が残らないようクリアもする
+            // (栄養アドバイス・数日分提案は別シートのものなので消さない)。
+            .task {
+                viewModel.clearInventedRecipe()
+                await viewModel.generateSuggestions()
+            }
             .navigationTitle("レシピを選ぶ")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

@@ -22,6 +22,17 @@ final class MealPlannerViewModel {
     private(set) var suggestions: [MealSuggester.Suggestion] = []
     private(set) var isGeneratingSuggestions = false
 
+    /// 端末内 AI(Foundation Models)による献立支援の結果。対応端末でのみ使う。
+    private(set) var aiAdvice: MealAIAssistant.NutritionAdvice?       // 栄養バランスの定性的アドバイス
+    private(set) var aiInventedRecipe: MealAIAssistant.InventedRecipe?  // 旬の食材で創作したレシピ
+    private(set) var aiProposal: [MealAIAssistant.ProposedMeal] = []  // 数日分の献立提案
+    private(set) var isRunningAI = false
+    /// AI 機能のシート内に表示するフィードバック(未生成・失敗の案内)。
+    /// 買い物リスト用の infoMessage とはアラートが別(シートの上では背面アラートが出ないため)。
+    private(set) var aiMessage: String?
+    /// この端末で AI 献立支援が使えるか(iOS 26+ かつ Apple Intelligence 対応時のみ true)
+    var isAIAvailable: Bool { MealAIAssistant.isAvailable }
+
     /// 日付を過ぎた献立を「未処理」として拾い続ける猶予日数。
     /// これより古い未処理の献立は監視対象から外す(際限なく溜まらないようにする)
     static let pastGraceDays = 30
@@ -592,18 +603,7 @@ final class MealPlannerViewModel {
         defer { isGeneratingSuggestions = false }
         do {
             // 好み: 直近500件のみ集計(複合インデックス不要な単一フィールド order)
-            let snapshot = try await purchaseHistoryRef
-                .order(by: "purchasedAt", descending: true)
-                .limit(to: 500)
-                .getDocuments()
-
-            var preferenceCounts: [String: Int] = [:]
-            for document in snapshot.documents {
-                guard let name = document.data()["name"] as? String else { continue }
-                let key = MealSuggester.normalize(name)
-                guard !key.isEmpty else { continue }
-                preferenceCounts[key, default: 0] += 1
-            }
+            let preferenceCounts = try await fetchPreferenceCounts()
 
             // マンネリ回避: 直近30日に作った(献立へ入れた)レシピほど提案を控える
             let recentCooks = try await recentCookCounts(days: 30)
@@ -641,6 +641,184 @@ final class MealPlannerViewModel {
             counts[recipeId, default: 0] += 1
         }
         return counts
+    }
+
+    /// 購入履歴(直近500件)から「正規化した品名 → 購入回数」を集計する。
+    /// 献立提案と AI 支援の好み入力で共用する(単一フィールド order なので複合インデックス不要)。
+    private func fetchPreferenceCounts() async throws -> [String: Int] {
+        let snapshot = try await purchaseHistoryRef
+            .order(by: "purchasedAt", descending: true)
+            .limit(to: 500)
+            .getDocuments()
+
+        var counts: [String: Int] = [:]
+        for document in snapshot.documents {
+            guard let name = document.data()["name"] as? String else { continue }
+            let key = MealSuggester.normalize(name)
+            guard !key.isEmpty else { continue }
+            counts[key, default: 0] += 1
+        }
+        return counts
+    }
+
+    // MARK: - AI 献立支援(端末内 Foundation Models・対応端末のみ)
+
+    /// 今日以降の献立の料理名(重複なし・最大20件)。AI へ渡す文脈に使う。
+    private func upcomingRecipeNames(limit: Int = 20) -> [String] {
+        var seen: Set<String> = []
+        var names: [String] = []
+        for entry in planEntries where entry.date >= Self.todayKey() {
+            let key = MealSuggester.normalize(entry.recipeName)
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            names.append(entry.recipeName)
+            if names.count >= limit { break }
+        }
+        return names
+    }
+
+    /// 好み(購入回数)の上位食材名。AI へ渡す文脈に使う。失敗時は空配列。
+    private func topPreferredIngredients(limit: Int) async -> [String] {
+        guard let counts = try? await fetchPreferenceCounts() else { return [] }
+        return counts.sorted { $0.value > $1.value }.prefix(limit).map(\.key)
+    }
+
+    /// 直近 `days` 日に作った料理名(重複なし)。AI のマンネリ回避の文脈に使う。失敗時は空配列。
+    private func recentCookedRecipeNames(days: Int) async -> [String] {
+        let today = Calendar.current.startOfDay(for: Date())
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: today),
+              let snapshot = try? await plansRef
+                .whereField("date", isGreaterThanOrEqualTo: Self.dateKey(cutoff))
+                .whereField("date", isLessThan: Self.dateKey(today))
+                .getDocuments() else { return [] }
+        var seen: Set<String> = []
+        var names: [String] = []
+        for document in snapshot.documents {
+            guard let name = document.data()["recipeName"] as? String else { continue }
+            let key = MealSuggester.normalize(name)
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            names.append(name)
+        }
+        return names
+    }
+
+    /// AI シートを開いたときに前回の結果をクリアする(古い献立に対する結果が残らないように)。
+    func resetAIResults() {
+        aiAdvice = nil
+        aiProposal = []
+        aiInventedRecipe = nil
+        aiMessage = nil
+    }
+
+    /// レシピ選択シートを開いたときに、前回の創作レシピだけをクリアする。
+    /// 別シート(AIにおまかせ)の栄養アドバイスや数日分提案は消さない。
+    func clearInventedRecipe() {
+        aiInventedRecipe = nil
+        aiMessage = nil
+    }
+
+    /// これからの献立全体を見て、栄養バランスの定性的アドバイスを生成する。
+    func requestNutritionAdvice() async {
+        isRunningAI = true
+        defer { isRunningAI = false }
+        aiAdvice = nil
+        aiMessage = nil
+        let names = upcomingRecipeNames()
+        guard !names.isEmpty else {
+            aiMessage = "これからの献立がありません。先に献立を追加してください。"
+            return
+        }
+        let season = Array(SeasonalIngredients.current())
+        aiAdvice = await MealAIAssistant.nutritionAdvice(recipeNames: names, season: season)
+        if aiAdvice == nil {
+            aiMessage = "アドバイスを生成できませんでした。時間をおいて再度お試しください。"
+        }
+    }
+
+    /// 旬の食材を使った新しいレシピを1品創作する。既存レシピ/カタログと重複しないものを返す。
+    func requestInventedRecipe() async {
+        isRunningAI = true
+        defer { isRunningAI = false }
+        aiInventedRecipe = nil
+        aiMessage = nil
+        let season = Array(SeasonalIngredients.current())
+        guard !season.isEmpty else {
+            aiMessage = "旬の食材情報がありません。"
+            return
+        }
+        let avoid = Set((recipes + catalogCandidates).map { MealSuggester.normalize($0.name) })
+        let preferred = await topPreferredIngredients(limit: 10)
+        aiInventedRecipe = await MealAIAssistant.inventRecipe(
+            season: season, avoidNames: avoid, preferred: preferred
+        )
+        if aiInventedRecipe == nil {
+            aiMessage = "レシピを生成できませんでした。時間をおいて再度お試しください。"
+        }
+    }
+
+    /// 数日分の献立をまとめて提案する(好み・旬・栄養バランスの偏り回避を考慮)。
+    func requestMealPlan(days: Int) async {
+        isRunningAI = true
+        defer { isRunningAI = false }
+        aiProposal = []
+        aiMessage = nil
+        let season = Array(SeasonalIngredients.current())
+        let existing = Array(recipes.map(\.name).prefix(20))
+        let preferred = await topPreferredIngredients(limit: 10)
+        let recent = await recentCookedRecipeNames(days: 30)
+        aiProposal = await MealAIAssistant.planMeals(
+            days: days, existingRecipes: existing,
+            season: season, preferred: preferred, recent: recent
+        ) ?? []
+        if aiProposal.isEmpty {
+            aiMessage = "献立を生成できませんでした。時間をおいて再度お試しください。"
+        }
+    }
+
+    /// AI が創作/提案したレシピを献立に追加する。
+    /// 同名のレシピがすでにレシピ帳にあれば再利用し、無ければレシピ帳へ保存(マテリアライズ)してから追加する
+    /// (カタログの `addPlanFromCatalog` と同じ流れ)。
+    func acceptInventedRecipe(_ invented: MealAIAssistant.InventedRecipe, on date: Date, servings: Int) {
+        let key = MealSuggester.normalize(invented.name)
+        if let existing = recipes.first(where: { MealSuggester.normalize($0.name) == key }) {
+            addPlan(recipe: existing, on: date, servings: servings)
+            return
+        }
+        let recipe = Recipe(
+            id: nil,
+            name: invented.name,
+            emoji: invented.emoji,
+            ingredients: invented.ingredients,
+            memo: invented.memo,
+            createdAt: nil
+        )
+        do {
+            let ref = try recipesRef.addDocument(from: recipe)
+            var saved = recipe
+            saved.id = ref.documentID
+            addPlan(recipe: saved, on: date, servings: servings)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// 1件の提案を献立に追加し、追加済みの提案はリストから外す。
+    /// (同じ行を続けて押しても二重追加にならないようにし、追加できたことを視覚的に示す)
+    func acceptProposal(_ meal: MealAIAssistant.ProposedMeal, on date: Date, servings: Int) {
+        acceptInventedRecipe(meal.recipe, on: date, servings: servings)
+        aiProposal.removeAll { $0.id == meal.id }
+    }
+
+    /// 数日分の提案をまとめて献立に追加する。各提案の `dayOffset` を基準日からの日数として割り当てる。
+    func acceptAllProposals(from baseDate: Date, servings: Int) {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: baseDate)
+        for meal in aiProposal {
+            guard let date = calendar.date(byAdding: .day, value: meal.dayOffset, to: start) else { continue }
+            acceptInventedRecipe(meal.recipe, on: date, servings: servings)
+        }
+        aiProposal = []
     }
 
     // MARK: - 食材展開(レシピ → 買い物リスト)
