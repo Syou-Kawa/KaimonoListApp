@@ -51,7 +51,7 @@
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
 			</array>
 		</dict>
-		<!-- その他のユーザーコンテンツ(買い物リスト・献立・レシピ・購入履歴) -->
+		<!-- その他のユーザーコンテンツ(買い物リスト・献立・レシピ・購入履歴・家計簿のレシート) -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
 			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>

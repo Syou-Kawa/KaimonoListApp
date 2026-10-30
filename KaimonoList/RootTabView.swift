@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// サインイン完了後のルート画面。買い物リスト・献立プランナー・共有をタブで切り替える。
+/// サインイン完了後のルート画面。買い物リスト・献立プランナー・記録・家計簿・共有をタブで切り替える。
 /// App ファイル側では、これまでの ShoppingListView(...) の代わりに RootTabView(session:) を表示する。
 ///
 /// 世帯の切り替え(招待コードでの参加・退出)に追従するため SessionStore を受け取り、
@@ -34,6 +34,13 @@ struct RootTabView: View {
                     currentUserName: session.displayName
                 )
                 .tabItem { Label("記録", systemImage: "clock.arrow.circlepath") }
+
+                ReceiptBookView(
+                    householdId: householdId,
+                    currentUid: uid,
+                    currentUserName: session.displayName
+                )
+                .tabItem { Label("家計簿", systemImage: "yensign.circle") }
 
                 HouseholdView(session: session)
                     .tabItem { Label("共有", systemImage: "person.2") }

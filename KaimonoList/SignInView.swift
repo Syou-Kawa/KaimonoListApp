@@ -37,6 +37,15 @@ struct SignInView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
+
+                #if DEBUG
+                // 開発用: 匿名認証でサインインをスキップ(本番ビルドには含まれない)
+                Button("開発用: サインインをスキップ") {
+                    Task { await session.signInAnonymouslyForDebug() }
+                }
+                .font(.footnote)
+                .padding(.top, 8)
+                #endif
             }
             .padding(.horizontal, 32)
             .padding(.bottom, 24)

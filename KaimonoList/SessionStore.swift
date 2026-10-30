@@ -76,6 +76,17 @@ final class SessionStore {
                 state = .failed(error.localizedDescription)
             }
         } else {
+            #if DEBUG
+            // 開発用: 匿名セッションが残っていればそのまま復帰する(サインインスキップを再起動後も継続)
+            if let user = Auth.auth().currentUser, user.isAnonymous {
+                do {
+                    try await completeSetup(uid: user.uid)
+                } catch {
+                    state = .failed(error.localizedDescription)
+                }
+                return
+            }
+            #endif
             // 旧ビルドの匿名アカウントが残っていたらサインアウトしておく
             if Auth.auth().currentUser != nil {
                 try? Auth.auth().signOut()
@@ -83,6 +94,22 @@ final class SessionStore {
             state = .signedOut
         }
     }
+
+    #if DEBUG
+    /// 開発用: Firebase 匿名認証でサインインし、サインイン画面をスキップする。
+    /// 事前に Firebase コンソールで Anonymous 認証を有効化しておく必要がある。
+    /// `#if DEBUG` で囲っているため本番ビルドには一切含まれない。
+    func signInAnonymouslyForDebug() async {
+        state = .loading
+        do {
+            let result = try await Auth.auth().signInAnonymously()
+            try await completeSetup(uid: result.user.uid)
+        } catch {
+            authErrorMessage = error.localizedDescription
+            state = .signedOut
+        }
+    }
+    #endif
 
     /// サインイン成立後に共通で行う世帯まわりの初期化。
     private func completeSetup(uid: String) async throws {

@@ -850,7 +850,7 @@ private struct RecordAddSheet: View {
 
 /// 年と月をホイールで選んで、その月へジャンプするシート。
 /// 遠い過去の月へも一気に移動できるようにする。未来の月は表示側で今月に丸める。
-private struct MonthPickerSheet: View {
+struct MonthPickerSheet: View {
     let selectedMonth: Date
     let onSelect: (Date) -> Void
 
